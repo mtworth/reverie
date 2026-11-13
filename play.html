@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en" class="studio">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Reverie</title>
+<!-- In-browser Reverie: nothing leaves this browser (local.js). -->
+<link rel="icon" href="data:," />
+<link rel="stylesheet" href="static/style.css" />
+<link rel="stylesheet" href="static/reverie.css" />
+</head>
+<body class="studio rv">
+  <header class="rv-head">
+    <a href="index.html" class="rv-word">reverie</a>
+    <nav class="rv-nav">
+      <a href="#today" data-page="today">today</a>
+      <a href="#journal" data-page="journal">journal</a>
+      <a href="#library" data-page="library">library</a>
+    </nav>
+    <button class="rv-listen" id="listen" data-state="off" title="Tap to pause or resume listening">
+      <span class="rv-dot"></span><span id="listenWord">listen</span>
+    </button>
+  </header>
+
+  <main class="rv-page" id="page"></main>
+  <footer class="rv-local-note">Everything stays in this browser: your playing is transcribed here, and nothing is uploaded.
+    Clearing this site's data erases your sketches.</footer>
+
+  <div class="rv-gate hidden" id="gate"><p>tap anywhere to begin listening</p></div>
+  <audio id="player" preload="metadata"></audio>
+
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.webgpu.min.js"></script>
+  <script src="static/transkun.js"></script>
+  <script src="static/student.js"></script>
+  <script src="static/facts.js"></script>
+  <script src="static/views.js"></script>
+  <script src="static/capture_local.js"></script>
+  <script src="static/local.js"></script>
+  <script src="static/reverie.js"></script>
+</body>
+</html>
