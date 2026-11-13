@@ -48,12 +48,15 @@
     for (const e of state.entries.values()) if (e.status === "processing") queue(e.id);
   })();
   const uid = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const changed = () => window.dispatchEvent(new Event("reverie:changed"));
+  const status = { models: "not loaded", step: "idle" }; // for ?debug
 
   // ---------- models (loaded on first use) ----------
 
   let models = null;
   function loadModels() {
     if (!models) {
+      status.models = "loading";
       models = (async () => {
         ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/";
         let tk;
@@ -65,6 +68,7 @@
           tk = await Transkun.load({ base: MODELS, ep: "wasm" });
         }
         const student = await Student.load({ url: MODELS + "student.onnx", ep: "wasm" });
+        status.models = `ready (${tk.ep || (navigator.gpu ? "webgpu or cpu" : "cpu")})`;
         return { tk, student };
       })();
     }
@@ -154,8 +158,9 @@
         if (!blob) throw new Error("no audio");
         mono44 = (await new OfflineAudioContext(1, 1, 44100).decodeAudioData(await blob.arrayBuffer())).getChannelData(0);
       }
+      status.step = `transcribing ${(mono44.length / 44100).toFixed(0)}s`;
       const { tk, student } = await loadModels();
-      const found = await tk.transcribe([mono44, mono44]);
+      const found = await tk.transcribe([mono44, mono44], (done, total) => (status.step = `transcribing ${done}/${total}`));
       const notes = found.map((n) => [n.pitch, +n.start.toFixed(3), +(n.end - n.start).toFixed(3), Math.round(n.velocity)]);
       if (notes.length < 3) {
         Object.assign(e, { status: "discarded" });
@@ -178,6 +183,8 @@
       await put("entries", e);
     } finally {
       pending.delete(id);
+      status.step = "idle";
+      changed();
     }
   }
 
@@ -200,6 +207,7 @@
     const half = await resample(pcm, rate, 22050);
     await put("audio", wav(half, 22050), e.id);
     await put("entries", e);
+    changed();
     queue(e.id);
   });
 
@@ -397,6 +405,7 @@
     }
   }
   window.LocalPlayer = new LocalPlayer();
+  window.LocalStatus = status;
 
   // Warm the models up once listening starts, so the first sketch doesn't wait for the download.
   Capture.on("state", (s) => {

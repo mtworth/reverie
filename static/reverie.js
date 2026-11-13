@@ -568,6 +568,7 @@ const LISTEN_WORDS = {
   off: "listen",
   starting: "listening",
   listening: "listening",
+  hearing: "hearing you",
   paused: "paused",
   blocked: "microphone off",
   "needs-gesture": "listen",
@@ -579,10 +580,11 @@ Capture.on("state", (s) => {
   gate.classList.toggle("hidden", s !== "needs-gesture");
 });
 Capture.on("burst", () => refresh());
+window.addEventListener("reverie:changed", () => refresh()); // the in-browser version, when a sketch arrives or is done
 Capture.ignorePlayback(player);
 
 // (The sample journal has no listen button or gate.)
-listenBtn?.addEventListener("click", () => (Capture.state === "listening" ? Capture.pause() : Capture.start()));
+listenBtn?.addEventListener("click", () => (["listening", "hearing"].includes(Capture.state) ? Capture.pause() : Capture.start()));
 gate?.addEventListener("click", () => {
   gate.classList.add("hidden");
   Capture.start();

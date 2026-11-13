@@ -37,5 +37,19 @@
   <script src="static/capture_local.js"></script>
   <script src="static/local.js"></script>
   <script src="static/reverie.js"></script>
+  <script>
+    // ?debug: live listening readout (level vs. threshold, burst, pipeline).
+    if (new URLSearchParams(location.search).has("debug")) {
+      const box = document.createElement("div");
+      box.className = "rv-debug";
+      document.body.append(box);
+      setInterval(() => {
+        const d = Capture.debug(), s = window.LocalStatus || {};
+        const f = (x) => (x == null ? "–" : x.toFixed(1));
+        box.textContent = `state ${d.state} · audio ${d.ctx || "–"} ${d.rate || ""}Hz\nlevel ${f(d.db)} dB · threshold ${f(d.threshold)} dB\n` +
+          `burst ${d.burst ? (d.burst.sinceMs / 1000).toFixed(0) + "s, closes 12s after quiet" : "none"}\nmodels ${s.models} · ${s.step}`;
+      }, 250);
+    }
+  </script>
 </body>
 </html>

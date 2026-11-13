@@ -51,8 +51,10 @@ body.rv { background: var(--bg); color: var(--ink); }
   border: 1px solid var(--ink-faint);
   background: transparent;
 }
-.rv-listen[data-state="listening"] .rv-dot { background: var(--accent); border-color: var(--accent); }
-.rv-listen[data-state="listening"] { color: var(--ink-muted); }
+.rv-listen[data-state="listening"] .rv-dot,
+.rv-listen[data-state="hearing"] .rv-dot { background: var(--accent); border-color: var(--accent); }
+.rv-listen[data-state="listening"], .rv-listen[data-state="hearing"] { color: var(--ink-muted); }
+.rv-listen[data-state="hearing"] { color: var(--accent); }
 
 /* ---------- page ---------- */
 
@@ -338,3 +340,7 @@ body.rv { background: var(--bg); color: var(--ink); }
 }
 .rv-same:hover { color: var(--accent); }
 .rv-local-note { max-width: 680px; margin: -3rem auto 3rem; padding: 0 1.5rem; font-family: var(--serif); font-style: italic; font-size: 0.85rem; color: var(--ink-faint); }
+
+/* ?debug: a small live readout for testing listening */
+.rv-debug { position: fixed; right: 12px; bottom: 12px; background: #fff; border: 1px solid var(--rule); border-radius: 6px;
+  padding: 0.5rem 0.7rem; font: 12px/1.5 ui-monospace, Menlo, monospace; color: var(--ink-muted); white-space: pre; z-index: 10; }

@@ -18,7 +18,7 @@ window.Capture = (() => {
   const MIN_THRESHOLD_DB = -65;
   const PLAYBACK_GUARD_MS = 1500;
 
-  const cap = { state: "off", stream: null, ctx: null, analyser: null, buf: null, node: null, ring: null, written: 0,
+  const cap = { state: "off", on: false, stream: null, ctx: null, analyser: null, buf: null, node: null, ring: null, written: 0,
                 t0: 0, burst: null, floorDb: null, timer: null, playbackUntil: 0, players: [] };
   const handlers = { state: [], burst: [] };
   const emit = (type, x) => handlers[type].forEach((fn) => fn(x));
@@ -37,7 +37,7 @@ window.Capture = (() => {
   registerProcessor("reverie-tap", Tap);`;
 
   async function start() {
-    if (cap.state === "starting" || cap.state === "listening") return;
+    if (cap.state === "starting" || cap.on) return;
     setState("starting");
     try {
       if (!cap.stream) {
@@ -60,7 +60,7 @@ window.Capture = (() => {
       cap.node = new AudioWorkletNode(cap.ctx, "reverie-tap");
       cap.ring = new Float32Array(Math.round(cap.ctx.sampleRate * RING_S));
       cap.node.port.onmessage = (e) => {
-        if (cap.state !== "listening") return;
+        if (!cap.on) return;
         const x = e.data, n = cap.ring.length;
         for (let i = 0; i < x.length; i++) cap.ring[(cap.written + i) % n] = x[i];
         cap.written += x.length;
@@ -78,6 +78,7 @@ window.Capture = (() => {
     if (cap.ctx.state === "suspended") return setState("needs-gesture");
     cap.t0 = performance.now();
     cap.written = 0;
+    cap.on = true;
     cap.timer = setInterval(tick, TICK_MS);
     setState("listening");
   }
@@ -93,7 +94,8 @@ window.Capture = (() => {
     const t = now();
     const db = levelDb();
     cap.lastDb = db;
-    if (cap.floorDb === null) cap.floorDb = db;
+    if (cap.floorDb === null) cap.floorDb = Math.min(db, -55); // a room, not whatever was already playing
+    cap.threshold = Math.max(cap.floorDb + THRESHOLD_ABOVE_FLOOR_DB, MIN_THRESHOLD_DB);
     const threshold = Math.max(cap.floorDb + THRESHOLD_ABOVE_FLOOR_DB, MIN_THRESHOLD_DB);
     const heard = db > threshold;
     if (db < cap.floorDb) cap.floorDb = cap.floorDb * 0.7 + db * 0.3;
@@ -111,6 +113,8 @@ window.Capture = (() => {
       if (t - cap.burst.lastActiveMs > SILENCE_MS) closeBurst();
       else if (t - cap.burst.startMs > MAX_BURST_MS) closeBurst(t);
     }
+    // The only sign of life: "hearing you" while sound is coming in.
+    setState(cap.burst && cap.burst.activeMs >= MIN_ACTIVE_MS && t - cap.burst.lastActiveMs < 1500 ? "hearing" : "listening");
   }
 
   function closeBurst(forcedEndMs) {
@@ -127,9 +131,10 @@ window.Capture = (() => {
   }
 
   async function pause() {
-    if (cap.state !== "listening") return;
+    if (!cap.on) return;
     clearInterval(cap.timer);
     if (cap.burst) closeBurst(now());
+    cap.on = false;
     setState("paused");
   }
 
@@ -138,8 +143,9 @@ window.Capture = (() => {
     p.addEventListener("pause", () => (cap.playbackUntil = now() + PLAYBACK_GUARD_MS));
   }
 
-  const debug = () => ({ state: cap.state, written: cap.written, db: cap.lastDb, floor: cap.floorDb, burst: cap.burst && { ...cap.burst }, rate: cap.ctx?.sampleRate, ctx: cap.ctx?.state });
+  const debug = () => ({ state: cap.state, written: cap.written, db: cap.lastDb, floor: cap.floorDb, threshold: cap.threshold,
+                         burst: cap.burst && { ...cap.burst, sinceMs: now() - cap.burst.startMs }, rate: cap.ctx?.sampleRate, ctx: cap.ctx?.state });
   // For testing without a microphone: hand the pipeline a recording as if it had just been heard.
   const inject = (pcm, rate) => emit("burst", { pcm, rate, at: new Date() });
-  return { start, pause, ignorePlayback, debug, inject, on: (type, fn) => handlers[type].push(fn), get state() { return cap.state; } };
+  return { start, pause, ignorePlayback, debug, inject, on: (type, fn) => handlers[type].push(fn), get state() { return cap.on ? "listening" : cap.state; } };
 })();
