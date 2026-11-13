@@ -658,4 +658,4 @@ function esc(text) {
 // ============================================================================
 
 refresh();
-Capture.start();
+if (!window.DEFER_LISTENING) Capture.start(); // the in-browser version starts after its loading screen

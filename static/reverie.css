@@ -344,3 +344,18 @@ body.rv { background: var(--bg); color: var(--ink); }
 /* ?debug: a small live readout for testing listening */
 .rv-debug { position: fixed; right: 12px; bottom: 12px; background: #fff; border: 1px solid var(--rule); border-radius: 6px;
   padding: 0.5rem 0.7rem; font: 12px/1.5 ui-monospace, Menlo, monospace; color: var(--ink-muted); white-space: pre; z-index: 10; }
+
+/* ---------- in-browser version: loading screen ---------- */
+.rv-loading {
+  position: fixed; inset: 0; background: rgba(255, 255, 255, 0.97); z-index: 20;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.9rem;
+  font-family: var(--serif); text-align: center; padding: 0 1.5rem;
+}
+.rv-loading.ready { cursor: pointer; }
+.rv-loading.gone { display: none; }
+.rv-loading-word { font-style: italic; font-size: 1.5rem; color: var(--ink); margin: 0; }
+.rv-loading.ready .rv-loading-word { color: var(--ink-muted); }
+.rv-loading.ready .rv-loading-bar { visibility: hidden; }
+.rv-loading-bar { width: min(280px, 70vw); height: 2px; background: var(--rule); border-radius: 1px; overflow: hidden; }
+.rv-loading-bar div { height: 100%; width: 0; background: var(--ink-muted); transition: width 0.2s; }
+.rv-loading-note { font-style: italic; font-size: 0.9rem; color: var(--ink-faint); margin: 0; min-height: 1.3em; }

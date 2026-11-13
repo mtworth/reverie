@@ -36,6 +36,46 @@
   <script src="static/views.js"></script>
   <script src="static/capture_local.js"></script>
   <script src="static/local.js"></script>
+  <div class="rv-loading" id="loading">
+    <p class="rv-loading-word">getting ready</p>
+    <div class="rv-loading-bar"><div id="loadingFill"></div></div>
+    <p class="rv-loading-note" id="loadingNote">&nbsp;</p>
+  </div>
+  <script>
+    // Loading screen: download (first time only) and warm up the models before listening, so the
+    // first sketch comes back as fast as possible. The tap that dismisses it starts the microphone.
+    window.DEFER_LISTENING = true;
+    (() => {
+      const box = document.getElementById("loading"), word = box.querySelector(".rv-loading-word");
+      const fill = document.getElementById("loadingFill"), note = document.getElementById("loadingNote");
+      const mb = (x) => (x / 1e6).toFixed(0);
+      ReverieModels.load((phase, done, total) => {
+        if (phase === "download" && total) {
+          fill.style.width = `${Math.min(100, (100 * done) / total).toFixed(1)}%`;
+          note.textContent = done < total ? `downloading the listening model · ${mb(done)} of ${mb(total)} MB (first time only)` : "";
+        }
+        if (phase === "warm") {
+          fill.style.width = "100%";
+          word.textContent = "warming up";
+          note.textContent = "\u00a0";
+        }
+      }).then(
+        () => {
+          word.textContent = "tap anywhere to begin listening";
+          box.classList.add("ready");
+          box.addEventListener("click", () => {
+            box.classList.add("gone");
+            Capture.start();
+          }, { once: true });
+        },
+        (err) => {
+          console.error(err);
+          word.textContent = "couldn't load the listening model";
+          note.textContent = "Check your connection and reload the page.";
+        },
+      );
+    })();
+  </script>
   <script src="static/reverie.js"></script>
   <script>
     // ?debug: live listening readout (level vs. threshold, burst, pipeline).

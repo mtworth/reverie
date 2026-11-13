@@ -73,12 +73,14 @@
     return notes.sort((a, b) => a.start - b.start || a.end - b.end || a.pitch - b.pitch);
   }
 
-  async function load({ base = "static/models/", ep = "webgpu" } = {}) {
+  // `bytes` (optional): { "transkun_score.onnx": Uint8Array, … } already downloaded, e.g. with progress.
+  async function load({ base = "static/models/", ep = "webgpu", bytes = {} } = {}) {
     const opts = { executionProviders: [ep], graphOptimizationLevel: "all" };
+    const src = (name) => bytes[name] || base + name;
     // One at a time: ONNX Runtime Web refuses to initialise its WASM backend concurrently.
-    const scoreSess = await ort.InferenceSession.create(base + "transkun_score.onnx", opts);
+    const scoreSess = await ort.InferenceSession.create(src("transkun_score.onnx"), opts);
     // The attribute network is tiny and its batch size varies; WASM is the safe home for it.
-    const attrSess = await ort.InferenceSession.create(base + "transkun_attr.onnx", { executionProviders: ["wasm"] });
+    const attrSess = await ort.InferenceSession.create(src("transkun_attr.onnx"), { executionProviders: ["wasm"] });
 
     async function transcribe(channels, onProgress) {
       const n0 = channels[0].length;

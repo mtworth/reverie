@@ -53,27 +53,71 @@
 
   // ---------- models (loaded on first use) ----------
 
+  // Models: downloaded once into Cache Storage (so later visits start in a second or two),
+  // with progress for the loading screen, then loaded and run once on silence so the first real
+  // sketch doesn't pay for GPU shader compilation.
+  const MODEL_FILES = ["transkun_score.onnx", "transkun_attr.onnx", "student.onnx"];
+  async function fetchModels(onProgress) {
+    const cache = "caches" in window ? await caches.open("reverie-models-v1") : null;
+    const sizes = {}, got = {}, bytes = {};
+    const report = () => onProgress?.(Object.values(got).reduce((a, b) => a + b, 0), Object.values(sizes).reduce((a, b) => a + b, 0));
+    await Promise.all(MODEL_FILES.map(async (name) => {
+      const url = MODELS + name;
+      let res = cache && (await cache.match(url));
+      const cached = Boolean(res);
+      if (!res) res = await fetch(url);
+      if (!res.ok) throw new Error(`${name}: ${res.status}`);
+      sizes[name] = Number(res.headers.get("content-length")) || 0;
+      got[name] = 0;
+      const reader = res.clone().body.getReader();
+      const parts = [];
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value);
+        got[name] += value.length;
+        if (!sizes[name] || got[name] > sizes[name]) sizes[name] = got[name];
+        report();
+      }
+      const buf = new Uint8Array(got[name]);
+      let o = 0;
+      for (const p of parts) {
+        buf.set(p, o);
+        o += p.length;
+      }
+      bytes[name] = buf;
+      if (cache && !cached) await cache.put(url, new Response(buf, { headers: { "content-type": "application/octet-stream" } }));
+    }));
+    return bytes;
+  }
+
   let models = null;
-  function loadModels() {
+  function loadModels(onProgress = () => {}) {
     if (!models) {
       status.models = "loading";
       models = (async () => {
         ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/";
-        let tk;
+        const bytes = await fetchModels((done, total) => onProgress("download", done, total));
+        onProgress("warm");
+        let tk, ep = "webgpu";
         try {
           if (!navigator.gpu) throw new Error("no WebGPU");
-          tk = await Transkun.load({ base: MODELS, ep: "webgpu" });
+          tk = await Transkun.load({ bytes, ep });
         } catch (err) {
           console.warn("Transkun on WebGPU unavailable, using the CPU", err);
-          tk = await Transkun.load({ base: MODELS, ep: "wasm" });
+          ep = "wasm";
+          tk = await Transkun.load({ bytes, ep });
         }
-        const student = await Student.load({ url: MODELS + "student.onnx", ep: "wasm" });
-        status.models = `ready (${tk.ep || (navigator.gpu ? "webgpu or cpu" : "cpu")})`;
+        const student = await Student.load({ url: bytes["student.onnx"], ep: "wasm" });
+        await tk.transcribe([new Float32Array(44100), new Float32Array(44100)]); // warm up
+        await student.embed([[60, 0, 0.5, 64], [64, 0.5, 0.5, 64], [67, 1, 0.5, 64]]);
+        status.models = `ready (${ep === "webgpu" ? "GPU" : "CPU"})`;
         return { tk, student };
       })();
     }
     return models;
   }
+  window.ReverieModels = { load: loadModels };
 
   // ---------- audio helpers ----------
 
@@ -407,8 +451,5 @@
   window.LocalPlayer = new LocalPlayer();
   window.LocalStatus = status;
 
-  // Warm the models up once listening starts, so the first sketch doesn't wait for the download.
-  Capture.on("state", (s) => {
-    if (s === "listening") loadModels().catch((err) => console.error("models", err));
-  });
+
 })();
