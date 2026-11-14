@@ -363,11 +363,6 @@ body.rv { background: var(--bg); color: var(--ink); }
   line-height: 1.55; margin: 1.4rem 0 0;
 }
 .rv-threshold-note a { color: var(--ink-muted); }
-/* The mark draws itself as the models load (local.js reports how far), and the dot settles in
-   once they're ready; the transition keeps it a slow pencil line however the bytes arrive. */
-.rv-threshold .drift-mark path { animation: none; stroke-dashoffset: 1; transition: stroke-dashoffset 1.6s cubic-bezier(0.45, 0.05, 0.25, 1); }
-.rv-threshold .drift-mark circle { animation: none; opacity: 0; transition: opacity 0.9s ease 1.2s, transform 0.9s ease 1.2s; transform: translateY(2px); }
-.rv-threshold .drift-mark.ready circle { opacity: 1; transform: none; }
 /* Underneath, the app waits faded out, and comes up as the entry dissolves. */
 body.rv-at-threshold { overflow: hidden; }
 body.rv-at-threshold .rv-head, body.rv-at-threshold .rv-page, body.rv-at-threshold .rv-local-note { opacity: 0; transition: none; }
@@ -431,7 +426,7 @@ body.rv-entering .rv-head, body.rv-entering .rv-page, body.rv-entering .rv-local
 
 @media (prefers-reduced-motion: reduce) {
   .rv-page, .rv-page.rv-enter, .rv-page.rv-enter .rv-entry > *, .rv-line.arrive, .rv-wave, .rv-roll, .rv-map,
-  .rv-map-tip, .rv-gate, .rv-threshold, .rv-threshold .drift-mark path, .rv-threshold .drift-mark circle,
+  .rv-map-tip, .rv-gate, .rv-threshold,
   body.rv-entering .rv-head, body.rv-entering .rv-page, body.rv-entering .rv-local-note, .rv-meter-fill { animation: none !important; transition: none !important; }
 }
 

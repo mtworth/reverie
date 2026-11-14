@@ -6,16 +6,16 @@
 <title>Reverie</title>
 <!-- In-browser Reverie: nothing leaves this browser (local.js). -->
 <link rel="icon" href="static/drift.svg?v=9227d112" type="image/svg+xml" />
-<link rel="stylesheet" href="static/style.css?v=1b39ebb1" />
-<link rel="stylesheet" href="static/reverie.css?v=6804d003" />
+<link rel="stylesheet" href="static/style.css?v=f786a5e7" />
+<link rel="stylesheet" href="static/reverie.css?v=4bce55d2" />
 </head>
 <body class="studio rv rv-at-threshold">
   <!-- The way in: the dictionary entry. Begin starts listening at once (the tap is what lets the
-       browser use the microphone); the models load meanwhile, and the mark draws itself as they do. -->
+       browser use the microphone); the models load meanwhile. -->
   <section class="rv-threshold" id="threshold">
     <article class="entry">
       <svg class="drift-mark" viewBox="0 0 280 160" aria-hidden="true">
-        <path d="M14 118 C 52 119, 78 117, 100 108 C 128 96, 142 62, 121 52 C 99 42, 84 78, 108 92 C 136 107, 168 98, 198 85 C 216 77, 230 74, 244 76" pathLength="1" />
+        <path d="M14 118 C 52 119, 78 117, 100 108 C 128 96, 142 62, 121 52 C 99 42, 84 78, 108 92 C 136 107, 168 98, 198 85 C 216 77, 230 74, 244 76" />
         <circle cx="256" cy="77" r="6.5" />
       </svg>
       <h1 class="entry-word">reverie</h1>
@@ -70,18 +70,11 @@
   <script src="static/local.js?v=65463e9d"></script>
   <script>
     // Listening starts at Begin (or at once, on a reload partway through a visit). The models
-    // start loading now, while the entry is being read; the mark draws itself as they arrive.
+    // start loading now, while the entry is being read.
     window.DEFER_LISTENING = Boolean(document.getElementById("threshold"));
     (() => {
       const threshold = document.getElementById("threshold");
       if (threshold) {
-        const mark = threshold.querySelector(".drift-mark"), line = mark.querySelector("path");
-        const draw = ({ phase, progress }) => {
-          line.style.strokeDashoffset = String(1 - progress);
-          mark.classList.toggle("ready", phase === "ready");
-        };
-        draw(ReverieModels.state);
-        window.addEventListener("reverie:models", (e) => draw(e.detail));
         document.getElementById("begin").addEventListener("click", () => {
           try {
             sessionStorage.setItem("reverie-begun", "1");
