@@ -527,6 +527,7 @@
         created_at: occ[0].created_at, first_heard: { entry_id: occ[0].id, phrase_id: "p1" }, highlighted: false,
         intended_instrument: null, last_heard: occ[occ.length - 1].created_at, entry_count: occ.length, related: [],
         closest: closest(idea.id),
+        vec: occ[0].vec, // its "sounds alike" fingerprint, worked out when the sketch was written down
         occurrences: occ.map((e) => ({ entry_id: e.id, session_id: "local", entry_title: titleOf(e), entry_created_at: e.created_at,
                                        phrase_id: "p1", start: 0, end: e.duration, variation_note: null, shared: [],
                                        highlighted: false, intended_instrument: null })),

@@ -7,7 +7,7 @@
 <!-- In-browser Reverie: nothing leaves this browser (local.js). -->
 <link rel="icon" href="static/drift.svg?v=9227d112" type="image/svg+xml" />
 <link rel="stylesheet" href="static/style.css?v=f786a5e7" />
-<link rel="stylesheet" href="static/reverie.css?v=4bce55d2" />
+<link rel="stylesheet" href="static/reverie.css?v=38e31ece" />
 </head>
 <body class="studio rv rv-at-threshold">
   <!-- The way in: the dictionary entry. Begin starts listening at once (the tap is what lets the
@@ -27,7 +27,8 @@
       </ol>
       <button class="enter-link" id="begin">Begin</button>
       <p class="rv-threshold-note">It listens, and keeps your sketches here in your browser. Nothing is uploaded.<br />
-        Or browse <a href="https://mtworth.github.io/reverie-sample-journal/">a sample journal</a> first.</p>
+        Or browse <a href="https://mtworth.github.io/reverie-sample-journal/">a sample journal</a> first ·
+        <a href="#about" id="thresholdAbout">about</a></p>
     </article>
   </section>
   <script>
@@ -40,7 +41,7 @@
     } catch (_) {}
   </script>
   <header class="rv-head">
-    <a href="#today" class="rv-word">reverie</a>
+    <a href="#today" class="rv-word"><svg class="rv-mark" viewBox="0 0 280 160" aria-hidden="true"><path d="M14 118 C 52 119, 78 117, 100 108 C 128 96, 142 62, 121 52 C 99 42, 84 78, 108 92 C 136 107, 168 98, 198 85 C 216 77, 230 74, 244 76" /><circle cx="256" cy="77" r="9" /></svg>reverie</a>
     <nav class="rv-nav">
       <a href="#today" data-page="today">today</a>
       <a href="#journal" data-page="journal">journal</a>
@@ -56,7 +57,31 @@
 
   <main class="rv-page" id="page"></main>
   <footer class="rv-local-note">Everything stays in this browser: your playing is transcribed here, and nothing is uploaded.
-    Clearing this site's data erases your sketches.</footer>
+    Clearing this site's data erases your sketches. · <a href="#about">about Reverie</a></footer>
+
+  <!-- The about page (#about), shown by reverie.js. -->
+  <template id="aboutText">
+    <h1 class="word">about</h1>
+    <blockquote class="rv-epigraph">“If I knew where the good songs came from, I’d go there more often.”
+      <cite>Leonard Cohen</cite></blockquote>
+    <p>Reverie is an experiment in how the technologies that power large language models can assist, not
+      replace, creative work. Think of it as a self-organizing notebook for your musical sketches.</p>
+    <p>Leave it open while you play. It listens, writes down what you play as notes, and quietly keeps
+      your sketches in a journal and a library of ideas, pointing out when something sounds like an idea
+      you’ve played before. It doesn’t compose, suggest or correct. The ideas stay yours; it only keeps
+      track of them.</p>
+    <p>It’s free to use, and we don’t store any of your data. Listening, transcription and organizing all
+      run in your browser, and your sketches are kept only there: there’s no account, and nothing you play
+      is uploaded. (Clearing this site’s data erases them.)</p>
+    <p>Made for piano; works best in desktop Chrome or Edge.</p>
+    <h2>how it works</h2>
+    <ul class="rv-credits">
+      <li>Transcription: Transkun, by Yujia Yan. The quick pencil sketch you see while playing is Basic Pitch, by Spotify.</li>
+      <li>“Sounds alike”: a small model distilled from Aria (EleutherAI), a language model trained on piano performances.</li>
+      <li>The models run in your browser with ONNX Runtime Web.</li>
+    </ul>
+    <p class="rv-about-back"><a href="#today">← back to today</a></p>
+  </template>
 
   <audio id="player" preload="metadata"></audio>
 
@@ -65,9 +90,9 @@
   <script src="static/student.js?v=762de29d"></script>
   <script src="static/sketch.js?v=2dd81951"></script>
   <script src="static/facts.js?v=2d8eecd4"></script>
-  <script src="static/views.js?v=4774099d"></script>
+  <script src="static/views.js?v=664e7e05"></script>
   <script src="static/capture_local.js?v=0441d39d"></script>
-  <script src="static/local.js?v=be2119ff"></script>
+  <script src="static/local.js?v=24a080be"></script>
   <script>
     // Listening starts at Begin (or at once, on a reload partway through a visit). The models
     // start loading now, while the entry is being read.
@@ -75,11 +100,14 @@
     (() => {
       const threshold = document.getElementById("threshold");
       if (threshold) {
-        document.getElementById("begin").addEventListener("click", () => {
-          try {
-            sessionStorage.setItem("reverie-begun", "1");
-          } catch (_) {}
-          Capture.start();
+        // Begin starts listening; "about" just opens the about page (listen from the header after).
+        const enter = (listen) => {
+          if (listen) {
+            try {
+              sessionStorage.setItem("reverie-begun", "1");
+            } catch (_) {}
+            Capture.start();
+          }
           threshold.classList.add("gone");
           document.body.classList.add("rv-entering");
           document.body.classList.remove("rv-at-threshold");
@@ -87,12 +115,14 @@
             threshold.remove();
             document.body.classList.remove("rv-entering");
           }, 1800);
-        });
+        };
+        document.getElementById("begin").addEventListener("click", () => enter(true));
+        document.getElementById("thresholdAbout").addEventListener("click", () => enter(false));
       }
       ReverieModels.load().catch((err) => console.error(err));
     })();
   </script>
-  <script src="static/reverie.js?v=e0820a32"></script>
+  <script src="static/reverie.js?v=9f7e394f"></script>
   <script>
     // ?debug: live listening readout (level vs. threshold, burst, pipeline).
     if (new URLSearchParams(location.search).has("debug")) {

@@ -215,11 +215,13 @@ window.Views = (() => {
     });
   }
 
+  // Fingerprints are stored with each sketch when it's written down (the in-browser version), so
+  // the map is instant; only ideas without one (the sample journal) are worked out here.
   async function layoutAlike(items, status) {
     const usable = [];
-    for (const i of items) if (i.notes && i.notes.length >= 4) usable.push(i);
-    status("listening to each idea…");
-    const vecs = await Promise.all(usable.map((i) => fingerprint(i.id, i.notes)));
+    for (const i of items) if (i.vec?.length || (i.notes && i.notes.length >= 4)) usable.push(i);
+    if (usable.some((i) => !i.vec?.length)) status("listening to each idea…");
+    const vecs = await Promise.all(usable.map((i) => (i.vec?.length ? i.vec : fingerprint(i.id, i.notes))));
     const xy = mds(vecs.map((v) => Array.from(v)));
     const xs = xy.map((p) => p[0]), ys = xy.map((p) => p[1]);
     const [ax, bx, ay, by] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];

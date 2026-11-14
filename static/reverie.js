@@ -95,7 +95,8 @@ const seenKey = (e) => `${e.id}:${PENDING.has(e.status) ? "p" : "r"}`;
 
 function route() {
   const [name, arg] = (location.hash.replace(/^#/, "") || "today").split("/");
-  return { name: ["today", "journal", "library", "idea"].includes(name) ? name : "today", arg };
+  const pages = ["today", "journal", "library", "idea", ...($("aboutText") ? ["about"] : [])];
+  return { name: pages.includes(name) ? name : "today", arg };
 }
 
 window.addEventListener("hashchange", () => render(true));
@@ -107,7 +108,8 @@ function render(force = false) {
     a.classList.toggle("current", a.dataset.page === r.name || (r.name === "idea" && a.dataset.page === "library"));
   });
   const html =
-    r.name === "journal" ? journalPage() : r.name === "library" ? libraryPage() : r.name === "idea" ? ideaPage(r.arg) : todayPage();
+    r.name === "journal" ? journalPage() : r.name === "library" ? libraryPage() : r.name === "idea" ? ideaPage(r.arg)
+      : r.name === "about" ? aboutPage() : todayPage();
   if (!force && html === store.lastHtml) return; // nothing changed: leave the page still
   store.lastHtml = html;
 
@@ -141,6 +143,11 @@ function render(force = false) {
 const REDUCED_MOTION = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
 // ---------- Today ----------
+
+// The about page: its words live in the page (play.html's <template id="aboutText">).
+function aboutPage() {
+  return `<article class="rv-entry rv-about-page">${$("aboutText").innerHTML}</article>`;
+}
 
 function todayPage() {
   const today = new Date().toDateString();
@@ -455,7 +462,8 @@ function afterRender(r) {
   if (view === "map") {
     const items = [...store.motifs.values()].map((m) => {
       const own = store.ideas.get(m.id) || {};
-      return { id: m.id, name: m.name, count: m.occurrences.length, first: m.occurrences[0]?.entry_created_at, facts: own.facts, notes: own.notes, line: own.line };
+      return { id: m.id, name: m.name, count: m.occurrences.length, first: m.occurrences[0]?.entry_created_at, facts: own.facts, notes: own.notes,
+               line: own.line, vec: m.vec };
     });
     Views.drawMap($("mapbox"), items, getPref("layout", "wheel", Views.LAYOUTS), {
       onPlay: (id) => {
