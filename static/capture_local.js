@@ -204,7 +204,8 @@ window.Capture = (() => {
   }
 
   const debug = () => ({ state: cap.state, written: cap.written, db: cap.lastDb, floor: cap.floorDb, threshold: cap.threshold,
-                         burst: cap.burst && { ...cap.burst, sinceMs: ((cap.written - cap.burst.startSample) / (cap.ctx?.sampleRate || RATE)) * 1000 },
+                         burst: cap.burst && { ...cap.burst, sinceMs: ((cap.written - cap.burst.startSample) / (cap.ctx?.sampleRate || RATE)) * 1000,
+                                               quietMs: now() - cap.burst.lastActiveMs },
                          rate: cap.ctx?.sampleRate, ctx: cap.ctx?.state });
   // For testing without a microphone: hand the pipeline a recording as if it had just been heard.
   const inject = (pcm, rate) => emit("burst", { id: null, pcm, rate, at: new Date() });

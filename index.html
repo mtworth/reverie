@@ -1,34 +1,118 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="studio">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Reverie</title>
-<link rel="icon" href="static/drift.svg" type="image/svg+xml" />
-<link rel="stylesheet" href="static/style.css" />
+<!-- In-browser Reverie: nothing leaves this browser (local.js). -->
+<link rel="icon" href="static/drift.svg?v=9227d112" type="image/svg+xml" />
+<link rel="stylesheet" href="static/style.css?v=1b39ebb1" />
+<link rel="stylesheet" href="static/reverie.css?v=6804d003" />
 </head>
-<body>
-  <main class="landing">
+<body class="studio rv rv-at-threshold">
+  <!-- The way in: the dictionary entry. Begin starts listening at once (the tap is what lets the
+       browser use the microphone); the models load meanwhile, and the mark draws itself as they do. -->
+  <section class="rv-threshold" id="threshold">
     <article class="entry">
       <svg class="drift-mark" viewBox="0 0 280 160" aria-hidden="true">
         <path d="M14 118 C 52 119, 78 117, 100 108 C 128 96, 142 62, 121 52 C 99 42, 84 78, 108 92 C 136 107, 168 98, 198 85 C 216 77, 230 74, 244 76" pathLength="1" />
-        <circle cx="256" cy="77" r="4.6" />
+        <circle cx="256" cy="77" r="6.5" />
       </svg>
       <h1 class="entry-word">reverie</h1>
       <p class="entry-pronunciation">/ˈrɛv.ər.i/ <span class="entry-phonetic">rev-er-ee</span></p>
       <p class="entry-pos">noun</p>
-
       <ol class="entry-definitions">
         <li>a state of being pleasantly lost in thought; a daydream.</li>
         <li class="entry-definition-own">your companion for musical sketching — listens while you play, and quietly organizes what you find.</li>
       </ol>
-
-      <a href="play.html" class="enter-link">Begin</a>
-      <p style="font-family: var(--serif); font-style: italic; color: var(--ink-faint); font-size: 0.95rem; margin-top: 1.4rem; line-height: 1.55">
-        Runs entirely in your browser (fastest in desktop Chrome or Edge): it listens, transcribes and keeps your sketches here,
-        and uploads nothing. The first time, it downloads its models (about 75 MB).<br />
-        Or browse <a href="https://mtworth.github.io/reverie-sample-journal/" style="color: var(--ink-muted)">a sample journal</a> first.</p>
+      <button class="enter-link" id="begin">Begin</button>
+      <p class="rv-threshold-note">It listens, and keeps your sketches here in your browser. Nothing is uploaded.<br />
+        Or browse <a href="https://mtworth.github.io/reverie-sample-journal/">a sample journal</a> first.</p>
     </article>
-  </main>
+  </section>
+  <script>
+    // A reload partway through a visit goes straight back in.
+    try {
+      if (sessionStorage.getItem("reverie-begun")) {
+        document.getElementById("threshold").remove();
+        document.body.classList.remove("rv-at-threshold");
+      }
+    } catch (_) {}
+  </script>
+  <header class="rv-head">
+    <a href="#today" class="rv-word">reverie</a>
+    <nav class="rv-nav">
+      <a href="#today" data-page="today">today</a>
+      <a href="#journal" data-page="journal">journal</a>
+      <a href="#library" data-page="library">library</a>
+    </nav>
+    <button class="rv-listen" id="listen" data-state="off" title="Tap to pause or resume listening">
+      <span class="rv-dot"></span><span id="listenWord">listen</span>
+      <!-- How loud it is in the room; past the tick, a sketch begins. -->
+      <span class="rv-meter" id="meter" aria-hidden="true"><span class="rv-meter-fill"></span><span class="rv-meter-tick"></span></span>
+    </button>
+    <span class="rv-model-note" id="modelNote"></span>
+  </header>
+
+  <main class="rv-page" id="page"></main>
+  <footer class="rv-local-note">Everything stays in this browser: your playing is transcribed here, and nothing is uploaded.
+    Clearing this site's data erases your sketches.</footer>
+
+  <audio id="player" preload="metadata"></audio>
+
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.webgpu.min.js"></script>
+  <script src="static/transkun.js?v=29673eb4"></script>
+  <script src="static/student.js?v=762de29d"></script>
+  <script src="static/sketch.js?v=2dd81951"></script>
+  <script src="static/facts.js?v=2d8eecd4"></script>
+  <script src="static/views.js?v=4774099d"></script>
+  <script src="static/capture_local.js?v=0441d39d"></script>
+  <script src="static/local.js?v=65463e9d"></script>
+  <script>
+    // Listening starts at Begin (or at once, on a reload partway through a visit). The models
+    // start loading now, while the entry is being read; the mark draws itself as they arrive.
+    window.DEFER_LISTENING = Boolean(document.getElementById("threshold"));
+    (() => {
+      const threshold = document.getElementById("threshold");
+      if (threshold) {
+        const mark = threshold.querySelector(".drift-mark"), line = mark.querySelector("path");
+        const draw = ({ phase, progress }) => {
+          line.style.strokeDashoffset = String(1 - progress);
+          mark.classList.toggle("ready", phase === "ready");
+        };
+        draw(ReverieModels.state);
+        window.addEventListener("reverie:models", (e) => draw(e.detail));
+        document.getElementById("begin").addEventListener("click", () => {
+          try {
+            sessionStorage.setItem("reverie-begun", "1");
+          } catch (_) {}
+          Capture.start();
+          threshold.classList.add("gone");
+          document.body.classList.add("rv-entering");
+          document.body.classList.remove("rv-at-threshold");
+          setTimeout(() => {
+            threshold.remove();
+            document.body.classList.remove("rv-entering");
+          }, 1800);
+        });
+      }
+      ReverieModels.load().catch((err) => console.error(err));
+    })();
+  </script>
+  <script src="static/reverie.js?v=eee5e1cc"></script>
+  <script>
+    // ?debug: live listening readout (level vs. threshold, burst, pipeline).
+    if (new URLSearchParams(location.search).has("debug")) {
+      const box = document.createElement("div");
+      box.className = "rv-debug";
+      document.body.append(box);
+      setInterval(() => {
+        const d = Capture.debug(), s = window.LocalStatus || {};
+        const f = (x) => (x == null ? "–" : x.toFixed(1));
+        box.textContent = `state ${d.state} · audio ${d.ctx || "–"} ${d.rate || ""}Hz\nlevel ${f(d.db)} dB · threshold ${f(d.threshold)} dB\n` +
+          `burst ${d.burst ? (d.burst.sinceMs / 1000).toFixed(0) + "s, closes 12s after quiet" : "none"}\nmodels ${s.models} · ${s.step}`;
+      }, 250);
+    }
+  </script>
 </body>
 </html>

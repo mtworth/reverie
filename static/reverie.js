@@ -48,6 +48,7 @@ async function refresh() {
       store.loaded = true;
     }
     render();
+    backgroundNote();
   } catch (err) {
     console.error(err);
   }
@@ -185,7 +186,7 @@ function lineHtml(e) {
   if (PENDING.has(e.status)) {
     // In the browser version a sketch being played gets a live piano roll (filled in by drawLive).
     const roll = window.LocalLive ? `<div class="rv-live" data-live="${e.id}"></div>` : "";
-    return `<li class="rv-line pending${arrive}" data-entry="${e.id}">${time}<div><div class="rv-title">…</div>${roll}</div></li>`;
+    return `<li class="rv-line pending${arrive}" data-entry="${e.id}">${time}<div><div class="rv-title">${esc(pendingCue(e.id))}</div>${roll}</div></li>`;
   }
   if (e.status === "failed") {
     return `<li class="rv-line failed${arrive}" data-entry="${e.id}">${time}<div><div class="rv-title">couldn't make this one out · <a href="#" data-retry="${e.id}">try again</a></div></div></li>`;
@@ -408,12 +409,33 @@ function closeTo(m) {
     .join("")}</ul>`;
 }
 
+// What a sketch that isn't finished yet is doing, in a few words (on its line, in place of a title).
+function pendingCue(id) {
+  const live = window.LocalLive?.(id);
+  if (!live) return "writing it down…"; // the whole-recording path, or after a reload
+  const clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  return {
+    tuning: live.seconds ? `heard you · ${clock(live.seconds)} · I'll write it down once I'm tuned in` : "heard you…",
+    // After a few quiet seconds the sketch is still open (it closes after 12), so the clock stops.
+    live: (Capture.debug?.().burst?.quietMs ?? 0) > 3000 ? "still listening…" : `listening along · ${clock(live.seconds)}`,
+    queued: "waiting its turn…",
+    finishing: "writing it down…",
+    inked: "writing it down…",
+  }[live.phase];
+}
+
 // The live piano roll of a sketch still being played: redrawn as each window is transcribed.
 function drawLive(id) {
   const el = page.querySelector(`[data-live="${id}"]`);
   const live = window.LocalLive?.(id);
-  // Pencil sketch first (Basic Pitch, a second or two behind), inked over by Transkun as it settles.
-  if (el && live && (live.ink.length || live.sketch.length)) Views.drawRoll(el, live.ink, { height: 56, span: 60, sketch: live.sketch });
+  if (!el || !live) return;
+  const title = el.closest(".rv-line")?.querySelector(".rv-title");
+  const cue = pendingCue(id);
+  if (title && title.textContent !== cue) title.textContent = cue;
+  // Pencil sketch first (Basic Pitch, a second or two behind), inked over by Transkun as it settles;
+  // the pencil stays wherever the ink hasn't arrived yet.
+  if (live.ink.length || live.sketch.length) Views.drawRoll(el, live.ink, { height: 56, span: 60, sketch: live.sketch });
+  backgroundNote();
 }
 window.addEventListener("reverie:live", (ev) => drawLive(ev.detail.id));
 
@@ -599,20 +621,82 @@ function markPlaying() {
 
 const LISTEN_WORDS = {
   off: "listen",
-  starting: "listening",
+  starting: "waiting for the microphone", // (the browser's permission prompt, the first time)
   listening: "listening",
   hearing: "hearing you",
   elsewhere: "listening in another tab",
   paused: "paused",
   blocked: "microphone off",
-  "needs-gesture": "listen",
+  "needs-gesture": "tap to listen",
 };
 
 Capture.on("state", (s) => {
+  if (!listenBtn) return;
   listenBtn.dataset.state = s;
   listenWord.textContent = LISTEN_WORDS[s] || s;
-  gate.classList.toggle("hidden", s !== "needs-gesture");
+  gate?.classList.toggle("hidden", s !== "needs-gesture");
+  meterLoop();
 });
+// Without a gate, any tap lets the browser start the microphone again.
+document.addEventListener("pointerdown", () => {
+  if (!gate && Capture.state === "needs-gesture") Capture.start();
+});
+
+// The level meter beside "listening": how loud the room is, and a tick where a sketch begins.
+const meter = $("meter");
+let meterRunning = false;
+function meterLoop() {
+  if (!meter || meterRunning) return;
+  meterRunning = true;
+  const fill = meter.querySelector(".rv-meter-fill"), tick = meter.querySelector(".rv-meter-tick");
+  const LO = -78, HI = -18; // dB across the meter
+  const at = (db) => Math.min(1, Math.max(0, (db - LO) / (HI - LO)));
+  const frame = () => {
+    const d = Capture.debug();
+    const on = Capture.state === "listening"; // (true while hearing, too)
+    meter.classList.toggle("on", on && d.db != null);
+    if (!on) return void (meterRunning = false);
+    if (d.db != null && d.threshold != null) {
+      // While a sketch is open a softer sound keeps it going, so the tick sits lower then.
+      const starts = d.burst ? d.threshold - 6 : d.threshold;
+      fill.style.transform = `scaleX(${at(d.db).toFixed(3)})`;
+      tick.style.left = `${(100 * at(starts)).toFixed(1)}%`;
+      meter.classList.toggle("over", d.db > starts);
+    }
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+}
+
+// One quiet note in the header for what's happening in the background: the models tuning in
+// (with a hairline that fills as they load), or sketches being written down.
+const bgNote = $("modelNote");
+function backgroundNote() {
+  if (!bgNote) return;
+  const m = window.ReverieModels?.state;
+  let text = "", progress = null, title = "";
+  if (m && m.phase === "failed") text = "couldn't load the listening model · reload to try again";
+  else if (m && m.phase !== "ready" && m.phase !== "idle") {
+    text = "tuning in";
+    progress = m.progress;
+    title = "Getting the transcription model ready. The first time takes a minute; after that it's kept in this browser.";
+  } else {
+    const writing = entries().filter((e) => PENDING.has(e.status) && window.LocalLive?.(e.id)?.phase !== "live").length;
+    if (writing) text = writing === 1 ? "writing it down" : `writing down ${writing} sketches`;
+  }
+  bgNote.title = title;
+  bgNote.style.setProperty("--progress", progress == null ? "0" : String(progress));
+  bgNote.classList.toggle("loading", progress != null);
+  if (bgNote.dataset.text === text) return;
+  bgNote.dataset.text = text;
+  bgNote.style.opacity = 0; // the words change by fading, not flipping
+  clearTimeout(bgNote.fadeTimer);
+  bgNote.fadeTimer = setTimeout(() => {
+    bgNote.textContent = text;
+    bgNote.style.opacity = text ? 1 : 0;
+  }, 250);
+}
+window.addEventListener("reverie:models", backgroundNote);
 Capture.on("burst", () => refresh());
 window.addEventListener("reverie:changed", () => refresh()); // the in-browser version, when a sketch arrives or is done
 Capture.ignorePlayback(player);

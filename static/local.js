@@ -62,7 +62,9 @@
   async function fetchModels(onProgress, files = MODEL_FILES) {
     const cache = "caches" in window ? await caches.open("reverie-models-v1") : null;
     const sizes = {}, got = {}, bytes = {};
-    const report = () => onProgress?.(Object.values(got).reduce((a, b) => a + b, 0), Object.values(sizes).reduce((a, b) => a + b, 0));
+    // (Reported once every file's size is known, so the total doesn't grow as it goes.)
+    const report = () => Object.keys(sizes).length === files.length &&
+      onProgress?.(Object.values(got).reduce((a, b) => a + b, 0), Object.values(sizes).reduce((a, b) => a + b, 0));
     await Promise.all(files.map(async (name) => {
       const url = MODELS + name;
       let res = cache && (await cache.match(url));
@@ -93,14 +95,28 @@
     return bytes;
   }
 
+  // How far along the models are, for the page's quiet cues: downloading is most of the wait the
+  // first time; warming up (compiling for the GPU, one practice run) is the rest.
+  const modelState = { phase: "idle", progress: 0 };
+  const reportModels = (phase, progress = modelState.progress) => {
+    Object.assign(modelState, { phase, progress });
+    window.dispatchEvent(new CustomEvent("reverie:models", { detail: { ...modelState } }));
+  };
+
   let models = null;
   function loadModels(onProgress = () => {}) {
     if (!models) {
       status.models = "loading";
+      reportModels("download", 0);
+      const downloaded = (done, total) => {
+        onProgress("download", done, total);
+        if (total) reportModels("download", Math.max(modelState.progress, 0.85 * Math.min(1, done / total)));
+      };
       models = (async () => {
         ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/";
-        const bytes = await fetchModels((done, total) => onProgress("download", done, total));
+        const bytes = await fetchModels(downloaded);
         onProgress("warm");
+        reportModels("warm", 0.88);
         let tk, ep = "webgpu", precision = "half";
         try {
           if (!navigator.gpu) throw new Error("no WebGPU");
@@ -109,6 +125,7 @@
           console.warn("half-precision Transkun unavailable; using full precision", err);
           precision = "full";
           Object.assign(bytes, await fetchModels((done, total) => onProgress("download", done, total), ["transkun_score.onnx"]));
+          reportModels("warm", 0.9);
           try {
             if (!navigator.gpu) throw new Error("no WebGPU");
             tk = await Transkun.load({ bytes, ep });
@@ -120,15 +137,18 @@
         }
         await Sketch.load(bytes["basic_pitch.onnx"]).catch((err) => console.warn("no live sketch", err));
         const student = await Student.load({ url: bytes["student.onnx"], ep: "wasm" });
+        reportModels("warm", 0.94);
         await tk.transcribe([new Float32Array(44100), new Float32Array(44100)]); // warm up
         await student.embed([[60, 0, 0.5, 64], [64, 0.5, 0.5, 64], [67, 1, 0.5, 64]]);
         status.models = `ready (${ep === "webgpu" ? "GPU" : "CPU"}, ${precision} precision)`;
+        reportModels("ready", 1);
         return { tk, student };
       })();
+      models.catch(() => reportModels("failed"));
     }
     return models;
   }
-  window.ReverieModels = { load: loadModels };
+  window.ReverieModels = { load: loadModels, state: modelState };
 
   // ---------- audio helpers ----------
 
@@ -236,10 +256,15 @@
         // Only the last window or two are left to do.
         status.step = "finishing a sketch";
         const L = p.live;
+        L.finishing = true;
+        liveChanged(L);
         await ensureStream(L);
         found = await L.stream.finish(p.pcm.length / p.rate + 0.5); // the sketch ends a moment after its last sound
+        // The whole sketch is inked now; the line keeps showing it until it turns into a finished line.
+        L.notes = found.map((n) => [n.pitch, n.start, Math.max(0.05, n.end - n.start), Math.round(n.velocity)]);
+        L.covered = Infinity;
+        liveChanged(L);
         mono44 = to44(p.pcm, p.rate);
-        live.delete(L.liveId);
       } else {
         status.step = `transcribing ${(mono44.length / 44100).toFixed(0)}s`;
         found = await tk.transcribe([mono44, mono44], (done, total) => (status.step = `transcribing ${done}/${total}`));
@@ -267,6 +292,7 @@
       Object.assign(e, { status: "failed" });
       await put("entries", e);
     } finally {
+      if (p?.live) live.delete(p.live.liveId);
       pending.delete(id);
       status.step = "idle";
       changed();
@@ -288,7 +314,8 @@
   // decoded as soon as it's complete (about 8s behind, ~4.5s of work on a GPU), so its notes can
   // be drawn as a live piano roll and, when it closes, only the last window or two remain.
 
-  const live = new Map(); // live id -> { liveId, entryId, rate, stream, waiting, notes, pumping }
+  const live = new Map(); // live id -> { liveId, entryId, rate, stream, waiting, notes, covered, pumping, finishing }
+  const liveChanged = (L) => window.dispatchEvent(new CustomEvent("reverie:live", { detail: { id: L.entryId } }));
 
   // Linear resampling for browsers that won't run the microphone at 44.1kHz.
   const to44 = (pcm, rate) => {
@@ -323,8 +350,8 @@
     L.sketching = (L.sketching || Promise.resolve())
       .then(() => L.sketch.pump())
       .then(() => {
-        L.sketchNotes = L.sketch.notes(L.stream ? L.stream.covered : 0);
-        window.dispatchEvent(new CustomEvent("reverie:live", { detail: { id: L.entryId } }));
+        L.sketchNotes = L.sketch.notes(Math.min(L.covered || 0, L.sketch.seconds));
+        liveChanged(L);
       })
       .catch((err) => console.warn("sketch", err));
   }
@@ -338,8 +365,12 @@
         return L.stream.pump();
       })
       .then(() => {
+        if (L.covered === Infinity) return; // finished meanwhile
+        // The ink and how far it reaches are taken together, so the sketch gives way to the ink
+        // only where the ink has actually arrived.
         L.notes = L.stream.notes().map((n) => [n.pitch, n.start, Math.max(0.05, n.end - n.start), Math.round(n.velocity)]);
-        window.dispatchEvent(new CustomEvent("reverie:live", { detail: { id: L.entryId } }));
+        L.covered = L.stream.covered;
+        liveChanged(L);
         if (status.step.startsWith("listening along")) status.step = "idle";
       })
       .catch((err) => console.error("live", err));
@@ -371,6 +402,10 @@
   Capture.on("burst", async ({ id, pcm, rate, at }) => {
     await state.ready;
     const L = id && live.get(id);
+    if (L) {
+      L.closed = true;
+      liveChanged(L);
+    }
     let e = L && state.entries.get(L.entryId);
     if (!e) {
       // Injected for testing (or the live entry never got created): the whole-recording path.
@@ -386,13 +421,16 @@
     queue(e.id);
   });
 
-  // Notes found so far for a sketch still being played (for the live piano roll).
-  // { ink: Transkun's settled notes, sketch: Basic Pitch's notes beyond them, covered: seconds settled }
+  // Notes found so far for a sketch still being played (for the live piano roll), and where it's at.
+  // { ink: Transkun's settled notes, sketch: Basic Pitch's notes beyond them, covered: seconds settled,
+  //   seconds: heard so far, phase: "tuning" (models still loading) | "live" | "finishing" | "inked" }
   window.LocalLive = (entryId) => {
     for (const L of live.values()) {
       if (L.entryId !== entryId) continue;
-      const covered = L.stream ? L.stream.covered : 0;
-      return { ink: L.notes || [], sketch: (L.sketchNotes || []).filter((n) => n[1] >= covered), covered };
+      const covered = L.covered || 0;
+      const seconds = L.stream ? L.stream.seconds : L.waiting.reduce((a, x) => a + x.length, 0) / 44100;
+      const phase = L.covered === Infinity ? "inked" : !L.stream ? "tuning" : L.finishing ? "finishing" : L.closed ? "queued" : "live";
+      return { ink: L.notes || [], sketch: (L.sketchNotes || []).filter((n) => n[1] >= covered), covered, seconds, phase };
     }
     return null;
   };

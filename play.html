@@ -6,12 +6,41 @@
 <title>Reverie</title>
 <!-- In-browser Reverie: nothing leaves this browser (local.js). -->
 <link rel="icon" href="static/drift.svg?v=9227d112" type="image/svg+xml" />
-<link rel="stylesheet" href="static/style.css?v=031aa8d0" />
-<link rel="stylesheet" href="static/reverie.css?v=3360f728" />
+<link rel="stylesheet" href="static/style.css?v=1b39ebb1" />
+<link rel="stylesheet" href="static/reverie.css?v=6804d003" />
 </head>
-<body class="studio rv">
+<body class="studio rv rv-at-threshold">
+  <!-- The way in: the dictionary entry. Begin starts listening at once (the tap is what lets the
+       browser use the microphone); the models load meanwhile, and the mark draws itself as they do. -->
+  <section class="rv-threshold" id="threshold">
+    <article class="entry">
+      <svg class="drift-mark" viewBox="0 0 280 160" aria-hidden="true">
+        <path d="M14 118 C 52 119, 78 117, 100 108 C 128 96, 142 62, 121 52 C 99 42, 84 78, 108 92 C 136 107, 168 98, 198 85 C 216 77, 230 74, 244 76" pathLength="1" />
+        <circle cx="256" cy="77" r="6.5" />
+      </svg>
+      <h1 class="entry-word">reverie</h1>
+      <p class="entry-pronunciation">/ˈrɛv.ər.i/ <span class="entry-phonetic">rev-er-ee</span></p>
+      <p class="entry-pos">noun</p>
+      <ol class="entry-definitions">
+        <li>a state of being pleasantly lost in thought; a daydream.</li>
+        <li class="entry-definition-own">your companion for musical sketching — listens while you play, and quietly organizes what you find.</li>
+      </ol>
+      <button class="enter-link" id="begin">Begin</button>
+      <p class="rv-threshold-note">It listens, and keeps your sketches here in your browser. Nothing is uploaded.<br />
+        Or browse <a href="https://mtworth.github.io/reverie-sample-journal/">a sample journal</a> first.</p>
+    </article>
+  </section>
+  <script>
+    // A reload partway through a visit goes straight back in.
+    try {
+      if (sessionStorage.getItem("reverie-begun")) {
+        document.getElementById("threshold").remove();
+        document.body.classList.remove("rv-at-threshold");
+      }
+    } catch (_) {}
+  </script>
   <header class="rv-head">
-    <a href="index.html" class="rv-word"><svg class="rv-mark" viewBox="0 0 280 160" aria-hidden="true"><path d="M14 118 C 52 119, 78 117, 100 108 C 128 96, 142 62, 121 52 C 99 42, 84 78, 108 92 C 136 107, 168 98, 198 85 C 216 77, 230 74, 244 76" /><circle cx="256" cy="77" r="13" /></svg>reverie</a>
+    <a href="#today" class="rv-word">reverie</a>
     <nav class="rv-nav">
       <a href="#today" data-page="today">today</a>
       <a href="#journal" data-page="journal">journal</a>
@@ -19,6 +48,8 @@
     </nav>
     <button class="rv-listen" id="listen" data-state="off" title="Tap to pause or resume listening">
       <span class="rv-dot"></span><span id="listenWord">listen</span>
+      <!-- How loud it is in the room; past the tick, a sketch begins. -->
+      <span class="rv-meter" id="meter" aria-hidden="true"><span class="rv-meter-fill"></span><span class="rv-meter-tick"></span></span>
     </button>
     <span class="rv-model-note" id="modelNote"></span>
   </header>
@@ -27,69 +58,48 @@
   <footer class="rv-local-note">Everything stays in this browser: your playing is transcribed here, and nothing is uploaded.
     Clearing this site's data erases your sketches.</footer>
 
-  <div class="rv-gate hidden" id="gate"><p>tap anywhere to begin listening</p></div>
   <audio id="player" preload="metadata"></audio>
 
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.webgpu.min.js"></script>
-  <script src="static/transkun.js?v=b560d134"></script>
+  <script src="static/transkun.js?v=29673eb4"></script>
   <script src="static/student.js?v=762de29d"></script>
   <script src="static/sketch.js?v=2dd81951"></script>
   <script src="static/facts.js?v=2d8eecd4"></script>
   <script src="static/views.js?v=4774099d"></script>
-  <script src="static/capture_local.js?v=c2c2587a"></script>
-  <script src="static/local.js?v=fcb22a9e"></script>
-  <div class="rv-loading" id="loading">
-    <p class="rv-loading-word">tap anywhere to begin</p>
-    <div class="rv-loading-bar"><div id="loadingFill"></div></div>
-    <p class="rv-loading-note" id="loadingNote">&nbsp;</p>
-  </div>
+  <script src="static/capture_local.js?v=0441d39d"></script>
+  <script src="static/local.js?v=65463e9d"></script>
   <script>
-    // Start screen: listening can begin at once (the tap is what lets the browser use the
-    // microphone); the models download (first time only) and warm up in the background, and
-    // anything played meanwhile waits its turn. Text changes fade rather than flip.
-    window.DEFER_LISTENING = true;
+    // Listening starts at Begin (or at once, on a reload partway through a visit). The models
+    // start loading now, while the entry is being read; the mark draws itself as they arrive.
+    window.DEFER_LISTENING = Boolean(document.getElementById("threshold"));
     (() => {
-      const box = document.getElementById("loading"), fill = document.getElementById("loadingFill");
-      const note = document.getElementById("loadingNote"), header = document.getElementById("modelNote");
-      const mb = (x) => (x / 1e6).toFixed(0);
-      const say = (el, text) => {
-        if (!el || el.dataset.text === text) return;
-        el.dataset.text = text;
-        el.style.opacity = 0;
-        setTimeout(() => {
-          el.textContent = text || "\u00a0";
-          el.style.opacity = text ? 1 : 0;
-        }, 250);
-      };
-      box.addEventListener("click", () => {
-        box.classList.add("gone");
-        Capture.start();
-      }, { once: true });
-      say(header, "getting ready");
-      ReverieModels.load((phase, done, total) => {
-        if (phase === "download" && total && done < total) {
-          fill.style.width = `${Math.min(100, (100 * done) / total).toFixed(1)}%`;
-          say(note, `getting the listening model ready · ${mb(done)} of ${mb(total)} MB, first time only`);
-        }
-        if (phase === "warm") {
-          fill.style.width = "100%";
-          say(note, "getting ready");
-        }
-      }).then(
-        () => {
-          box.classList.add("ready");
-          say(note, "");
-          say(header, "");
-        },
-        (err) => {
-          console.error(err);
-          say(note, "couldn't load the listening model · check your connection and reload");
-          say(header, "couldn't load the listening model");
-        },
-      );
+      const threshold = document.getElementById("threshold");
+      if (threshold) {
+        const mark = threshold.querySelector(".drift-mark"), line = mark.querySelector("path");
+        const draw = ({ phase, progress }) => {
+          line.style.strokeDashoffset = String(1 - progress);
+          mark.classList.toggle("ready", phase === "ready");
+        };
+        draw(ReverieModels.state);
+        window.addEventListener("reverie:models", (e) => draw(e.detail));
+        document.getElementById("begin").addEventListener("click", () => {
+          try {
+            sessionStorage.setItem("reverie-begun", "1");
+          } catch (_) {}
+          Capture.start();
+          threshold.classList.add("gone");
+          document.body.classList.add("rv-entering");
+          document.body.classList.remove("rv-at-threshold");
+          setTimeout(() => {
+            threshold.remove();
+            document.body.classList.remove("rv-entering");
+          }, 1800);
+        });
+      }
+      ReverieModels.load().catch((err) => console.error(err));
     })();
   </script>
-  <script src="static/reverie.js?v=445deaf3"></script>
+  <script src="static/reverie.js?v=eee5e1cc"></script>
   <script>
     // ?debug: live listening readout (level vs. threshold, burst, pipeline).
     if (new URLSearchParams(location.search).has("debug")) {

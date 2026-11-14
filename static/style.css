@@ -660,8 +660,8 @@ body.studio {
 
 /* ---------- the Drift mark (2026-11-13): one pencil line that wanders and trails off to a dot ---------- */
 
-.drift-mark { display: block; width: 132px; height: auto; margin: 0 0 1rem -10px; overflow: visible; }
-.drift-mark path { fill: none; stroke: var(--ink); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round;
+.drift-mark { display: block; width: 170px; height: auto; margin: 0 0 0.6rem -8px; overflow: visible; }
+.drift-mark path { fill: none; stroke: var(--ink); stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round;
   stroke-dasharray: 1; stroke-dashoffset: 1; animation: drift-draw 2.4s cubic-bezier(0.45, 0.05, 0.25, 1) 0.3s forwards; }
 .drift-mark circle { fill: var(--accent); opacity: 0; animation: drift-dot 0.8s ease-out 2.5s forwards; }
 @keyframes drift-draw { to { stroke-dashoffset: 0; } }

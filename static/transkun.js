@@ -198,7 +198,9 @@
     // its audio is complete (about 8s behind), so finishing only has the last window or two left.
     function stream() {
       const st = newState();
-      let buf = new Float32Array(FS * 30), len = 0, next = 0, pumping = null;
+      // next: the window to start; done: where the windows already decoded end (covered follows done,
+      // so the live display never hides its sketch of a stretch before the notes for it exist).
+      let buf = new Float32Array(FS * 30), len = 0, next = 0, done = 0, pumping = null;
       const audio = (_c, from, to) => {
         const out = new Float32Array(to - from);
         const a = Math.max(0, from), b = Math.min(len, to);
@@ -210,6 +212,7 @@
           const i = next;
           next += step;
           await lock(() => runChunk(st, i, audio));
+          done = i + step;
         }
       }
       return {
@@ -241,12 +244,14 @@
             const i = next;
             next += step;
             await lock(() => runChunk(st, i, audio));
+            done = i + step;
           }
           return finishNotes(st);
         },
         get seconds() { return len / FS; },
-        // Seconds of audio whose notes are settled (a second short of the last decoded window's middle).
-        get covered() { return next === 0 ? 0 : Math.max(0, (next - step + seg - padSamples) / FS - 1); },
+        // Seconds of audio whose notes are settled: up to a second short of the end of the last window
+        // that has finished decoding (not merely started).
+        get covered() { return done === 0 ? 0 : Math.max(0, (done - step + seg - padSamples) / FS - 1); },
         get audio() { return buf.subarray(0, len); },
       };
     }
