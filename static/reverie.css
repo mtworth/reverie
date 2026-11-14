@@ -403,3 +403,4 @@ body.rv { background: var(--bg); color: var(--ink); }
 .rv-live { max-width: 420px; margin: 0.35rem 0 0.1rem; min-height: 4px; }
 .rv-live .rv-roll { animation: none; opacity: 0.75; }
 .rv-live .rv-roll-note.melody { fill: var(--ink-muted); }
+.rv-roll-sketch { fill: none; stroke: var(--ink-faint); stroke-width: 1.4; stroke-linecap: round; opacity: 0.8; vector-effect: non-scaling-stroke; }

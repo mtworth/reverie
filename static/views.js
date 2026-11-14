@@ -370,10 +370,11 @@ window.Views = (() => {
   // Time across, pitch up. The melody (smallest-leap voice above G3, as in facts.js) is dark;
   // everything else is light. Notes are drawn short (onsets, not pedal smear), louder = bolder.
   // `span` (seconds): a fixed time axis, e.g. for a live roll that should grow left to right.
-  function drawRoll(container, notes, { height = 120, span: fixedSpan = null } = {}) {
+  // `sketch` (optional): rough notes still to be confirmed, drawn as faint pencil strokes.
+  function drawRoll(container, notes, { height = 120, span: fixedSpan = null, sketch = [] } = {}) {
     container.innerHTML = "";
-    if (!notes || !notes.length) return;
-    const ns = [...notes].sort((a, b) => a[1] - b[1] || b[0] - a[0]);
+    if ((!notes || !notes.length) && !sketch.length) return;
+    const ns = [...(notes || [])].sort((a, b) => a[1] - b[1] || b[0] - a[0]);
     // Melody: per onset group (60ms), the note above G3 nearest the previous melody note.
     const melody = new Set();
     let prev = null;
@@ -388,15 +389,23 @@ window.Views = (() => {
       }
       i = j;
     }
-    const pitches = ns.map((n) => n[0]).sort((a, b) => a - b);
+    const pitches = ns.concat(sketch).map((n) => n[0]).sort((a, b) => a - b);
     const q = (f) => pitches[Math.min(pitches.length - 1, Math.floor(f * pitches.length))];
     const lo = Math.min(q(0.03), q(0.5) - 6) - 2, hi = Math.max(q(0.97), q(0.5) + 6) + 2;
-    const span = fixedSpan || Math.max(1, ns[ns.length - 1][1] + 0.4);
+    const span = fixedSpan || Math.max(1, ns.concat(sketch).reduce((m, n) => Math.max(m, n[1]), 0) + 0.4);
     const W = 600, H = height, row = H / (hi - lo + 1);
     const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, class: "rv-roll", preserveAspectRatio: "none" });
     svg.style.height = `${H}px`;
     for (let p = Math.ceil(lo / 12) * 12; p <= hi; p += 12) {
       svg.append(el("line", { x1: 0, x2: W, y1: H - (p - lo) * row, y2: H - (p - lo) * row, class: "rv-roll-c" }));
+    }
+    // Pencil: a thin, slightly wandering stroke per sketched note.
+    for (const [p, t, d] of sketch) {
+      if (p < lo || p > hi) continue;
+      const x = (t / span) * W, w = Math.max(5, (Math.min(d, 0.35) / span) * W), y = H - (p - lo + 0.5) * row;
+      const wobble = ((p * 7 + Math.round(t * 13)) % 5) / 5 - 0.4;
+      svg.append(el("path", { d: `M${x.toFixed(1)} ${(y + wobble).toFixed(1)} q ${(w / 2).toFixed(1)} ${(-wobble * 1.5).toFixed(1)} ${w.toFixed(1)} ${(wobble * 0.6).toFixed(1)}`,
+                              class: "rv-roll-sketch" }));
     }
     for (const n of ns) {
       const [p, t, d, v] = n;

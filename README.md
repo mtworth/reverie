@@ -8,4 +8,5 @@ Open the GitHub Pages site in desktop Chrome or Edge and allow the microphone. A
 
 - Transcription: Transkun V2 by Yujia Yan (MIT), as ONNX graphs, decoded in JavaScript.
 - "Sounds close to": a small model distilled from Aria (EleutherAI, Apache-2.0) on GiantMIDI-Piano and ATEPP windows (CC BY 4.0).
+- Live sketch: Basic Pitch by Spotify (Apache-2.0).
 - ONNX Runtime Web (MIT).

@@ -411,8 +411,9 @@ function closeTo(m) {
 // The live piano roll of a sketch still being played: redrawn as each window is transcribed.
 function drawLive(id) {
   const el = page.querySelector(`[data-live="${id}"]`);
-  const notes = window.LocalLive?.(id);
-  if (el && notes && notes.length) Views.drawRoll(el, notes, { height: 56, span: 60 }); // a sketch runs at most a minute
+  const live = window.LocalLive?.(id);
+  // Pencil sketch first (Basic Pitch, a second or two behind), inked over by Transkun as it settles.
+  if (el && live && (live.ink.length || live.sketch.length)) Views.drawRoll(el, live.ink, { height: 56, span: 60, sketch: live.sketch });
 }
 window.addEventListener("reverie:live", (ev) => drawLive(ev.detail.id));
 

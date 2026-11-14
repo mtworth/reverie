@@ -56,12 +56,14 @@
   // Models: downloaded once into Cache Storage (so later visits start in a second or two),
   // with progress for the loading screen, then loaded and run once on silence so the first real
   // sketch doesn't pay for GPU shader compilation.
-  const MODEL_FILES = ["transkun_score.onnx", "transkun_attr.onnx", "student.onnx"];
-  async function fetchModels(onProgress) {
+  // Half-precision Transkun: same notes (checked on six sketches), half the download, ~1.3x faster on a
+  // GPU. Full precision is fetched only if the GPU can't run half precision (and for the CPU path).
+  const MODEL_FILES = ["transkun_score_fp16.onnx", "transkun_attr.onnx", "student.onnx", "basic_pitch.onnx"];
+  async function fetchModels(onProgress, files = MODEL_FILES) {
     const cache = "caches" in window ? await caches.open("reverie-models-v1") : null;
     const sizes = {}, got = {}, bytes = {};
     const report = () => onProgress?.(Object.values(got).reduce((a, b) => a + b, 0), Object.values(sizes).reduce((a, b) => a + b, 0));
-    await Promise.all(MODEL_FILES.map(async (name) => {
+    await Promise.all(files.map(async (name) => {
       const url = MODELS + name;
       let res = cache && (await cache.match(url));
       const cached = Boolean(res);
@@ -99,19 +101,28 @@
         ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/";
         const bytes = await fetchModels((done, total) => onProgress("download", done, total));
         onProgress("warm");
-        let tk, ep = "webgpu";
+        let tk, ep = "webgpu", precision = "half";
         try {
           if (!navigator.gpu) throw new Error("no WebGPU");
-          tk = await Transkun.load({ bytes, ep });
+          tk = await Transkun.load({ bytes: { ...bytes, "transkun_score.onnx": bytes["transkun_score_fp16.onnx"] }, ep });
         } catch (err) {
-          console.warn("Transkun on WebGPU unavailable, using the CPU", err);
-          ep = "wasm";
-          tk = await Transkun.load({ bytes, ep });
+          console.warn("half-precision Transkun unavailable; using full precision", err);
+          precision = "full";
+          Object.assign(bytes, await fetchModels((done, total) => onProgress("download", done, total), ["transkun_score.onnx"]));
+          try {
+            if (!navigator.gpu) throw new Error("no WebGPU");
+            tk = await Transkun.load({ bytes, ep });
+          } catch (err2) {
+            console.warn("Transkun on WebGPU unavailable, using the CPU", err2);
+            ep = "wasm";
+            tk = await Transkun.load({ bytes, ep });
+          }
         }
+        await Sketch.load(bytes["basic_pitch.onnx"]).catch((err) => console.warn("no live sketch", err));
         const student = await Student.load({ url: bytes["student.onnx"], ep: "wasm" });
         await tk.transcribe([new Float32Array(44100), new Float32Array(44100)]); // warm up
         await student.embed([[60, 0, 0.5, 64], [64, 0.5, 0.5, 64], [67, 1, 0.5, 64]]);
-        status.models = `ready (${ep === "webgpu" ? "GPU" : "CPU"})`;
+        status.models = `ready (${ep === "webgpu" ? "GPU" : "CPU"}, ${precision} precision)`;
         return { tk, student };
       })();
     }
@@ -294,7 +305,11 @@
     if (!L.ready) {
       L.ready = loadModels().then(({ tk }) => {
         L.stream = tk.stream();
-        for (const x of L.waiting) L.stream.push(x);
+        L.sketch = Sketch.stream();
+        for (const x of L.waiting) {
+          L.stream.push(x);
+          L.sketch.push(x);
+        }
         L.waiting = [];
         pump(L);
       });
@@ -302,8 +317,21 @@
     return L.ready;
   }
 
+  // The sketch: Basic Pitch, a second or two behind; only ahead of where Transkun has settled.
+  function sketchPump(L) {
+    if (!L.sketch) return;
+    L.sketching = (L.sketching || Promise.resolve())
+      .then(() => L.sketch.pump())
+      .then(() => {
+        L.sketchNotes = L.sketch.notes(L.stream ? L.stream.covered : 0);
+        window.dispatchEvent(new CustomEvent("reverie:live", { detail: { id: L.entryId } }));
+      })
+      .catch((err) => console.warn("sketch", err));
+  }
+
   function pump(L) {
     if (!L.stream) return;
+    sketchPump(L);
     L.pumping = (L.pumping || Promise.resolve())
       .then(() => {
         status.step = `listening along (${L.stream.seconds.toFixed(0)}s)`;
@@ -335,6 +363,7 @@
     const x = to44(pcm, L.rate);
     if (L.stream) {
       L.stream.push(x);
+      L.sketch?.push(x);
       pump(L);
     } else L.waiting.push(x);
   });
@@ -358,8 +387,13 @@
   });
 
   // Notes found so far for a sketch still being played (for the live piano roll).
+  // { ink: Transkun's settled notes, sketch: Basic Pitch's notes beyond them, covered: seconds settled }
   window.LocalLive = (entryId) => {
-    for (const L of live.values()) if (L.entryId === entryId) return L.notes;
+    for (const L of live.values()) {
+      if (L.entryId !== entryId) continue;
+      const covered = L.stream ? L.stream.covered : 0;
+      return { ink: L.notes || [], sketch: (L.sketchNotes || []).filter((n) => n[1] >= covered), covered };
+    }
     return null;
   };
 

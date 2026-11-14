@@ -245,6 +245,8 @@
           return finishNotes(st);
         },
         get seconds() { return len / FS; },
+        // Seconds of audio whose notes are settled (a second short of the last decoded window's middle).
+        get covered() { return next === 0 ? 0 : Math.max(0, (next - step + seg - padSamples) / FS - 1); },
         get audio() { return buf.subarray(0, len); },
       };
     }
