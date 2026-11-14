@@ -58,7 +58,8 @@
   // sketch doesn't pay for GPU shader compilation.
   // Half-precision Transkun: same notes (checked on six sketches), half the download, ~1.3x faster on a
   // GPU. Full precision is fetched only if the GPU can't run half precision (and for the CPU path).
-  const MODEL_FILES = ["transkun_score_fp16.onnx", "transkun_attr.onnx", "student.onnx", "basic_pitch.onnx"];
+  // (basic_pitch.onnx is fetched on its own, first: see loadSketch.)
+  const MODEL_FILES = ["transkun_score_fp16.onnx", "transkun_attr.onnx", "student.onnx"];
   async function fetchModels(onProgress, files = MODEL_FILES) {
     const cache = "caches" in window ? await caches.open("reverie-models-v1") : null;
     const sizes = {}, got = {}, bytes = {};
@@ -103,11 +104,28 @@
     window.dispatchEvent(new CustomEvent("reverie:models", { detail: { ...modelState } }));
   };
 
+  // The live pencil sketch (Basic Pitch, 230 KB) loads first and on its own, so notes appear a few
+  // seconds after Begin even on a first visit, while the big transcriber is still downloading.
+  let sketchModel = null;
+  function loadSketch() {
+    if (!sketchModel) {
+      sketchModel = fetchModels(null, ["basic_pitch.onnx"])
+        .then((b) => Sketch.load(b["basic_pitch.onnx"]))
+        .catch((err) => {
+          console.warn("no live sketch", err);
+          throw err;
+        });
+    }
+    return sketchModel;
+  }
+
   let models = null;
   function loadModels(onProgress = () => {}) {
+    loadSketch().catch(() => {});
     if (!models) {
       status.models = "loading";
       reportModels("download", 0);
+      modelState.since = performance.now();
       const downloaded = (done, total) => {
         onProgress("download", done, total);
         if (total) reportModels("download", Math.max(modelState.progress, 0.85 * Math.min(1, done / total)));
@@ -135,7 +153,6 @@
             tk = await Transkun.load({ bytes, ep });
           }
         }
-        await Sketch.load(bytes["basic_pitch.onnx"]).catch((err) => console.warn("no live sketch", err));
         const student = await Student.load({ url: bytes["student.onnx"], ep: "wasm" });
         reportModels("warm", 0.94);
         await tk.transcribe([new Float32Array(44100), new Float32Array(44100)]); // warm up
@@ -232,9 +249,9 @@
   async function process(id) {
     const e = state.entries.get(id);
     if (!e) return;
+    const p = pending.get(id);
     try {
       let mono44;
-      const p = pending.get(id);
       if (p?.live) mono44 = null; // transcribed while it was played
       else if (p) mono44 = await resample(p.pcm, p.rate, 44100);
       else {
@@ -259,7 +276,7 @@
         L.finishing = true;
         liveChanged(L);
         await ensureStream(L);
-        found = await L.stream.finish(p.pcm.length / p.rate + 0.5); // the sketch ends a moment after its last sound
+        found = await L.stream.finish(p.pcm.length / p.rate + 0.5, () => inkSoFar(L)); // ends a moment after its last sound
         // The whole sketch is inked now; the line keeps showing it until it turns into a finished line.
         L.notes = found.map((n) => [n.pitch, n.start, Math.max(0.05, n.end - n.start), Math.round(n.velocity)]);
         L.covered = Infinity;
@@ -328,16 +345,38 @@
     return out;
   };
 
+  // Audio heard so far is kept in L.waiting until both the sketch and the transcriber have it.
+  function feed(L, x) {
+    L.stream?.push(x);
+    L.sketch?.push(x);
+    if (!L.stream || !L.sketch) L.waiting.push(x);
+  }
+  function caughtUp(L, consumer) {
+    for (const x of L.waiting) consumer.push(x);
+    if (L.stream && L.sketch) L.waiting = [];
+  }
+
+  function ensureSketch(L) {
+    if (!L.sketchReady) {
+      L.sketchReady = loadSketch().then(
+        () => {
+          if (L.covered === Infinity) return; // already finished
+          L.sketch = Sketch.stream();
+          caughtUp(L, L.sketch);
+          pump(L);
+        },
+        () => {},
+      );
+    }
+    return L.sketchReady;
+  }
+
   function ensureStream(L) {
     if (!L.ready) {
       L.ready = loadModels().then(({ tk }) => {
         L.stream = tk.stream();
-        L.sketch = Sketch.stream();
-        for (const x of L.waiting) {
-          L.stream.push(x);
-          L.sketch.push(x);
-        }
-        L.waiting = [];
+        caughtUp(L, L.stream);
+        liveChanged(L);
         pump(L);
       });
     }
@@ -356,21 +395,25 @@
       .catch((err) => console.warn("sketch", err));
   }
 
-  function pump(L) {
-    if (!L.stream) return;
+  // The ink and how far it reaches are taken together, so the sketch gives way to the ink only
+  // where the ink has actually arrived. Called as each window lands.
+  function inkSoFar(L) {
+    if (L.covered === Infinity) return; // finished meanwhile
+    L.notes = L.stream.notes().map((n) => [n.pitch, n.start, Math.max(0.05, n.end - n.start), Math.round(n.velocity)]);
+    L.covered = L.stream.covered;
+    liveChanged(L); // (LocalLive hides pencil notes behind the ink at once)
     sketchPump(L);
+  }
+
+  function pump(L) {
+    sketchPump(L);
+    if (!L.stream) return;
     L.pumping = (L.pumping || Promise.resolve())
       .then(() => {
         status.step = `listening along (${L.stream.seconds.toFixed(0)}s)`;
-        return L.stream.pump();
+        return L.stream.pump(() => inkSoFar(L));
       })
       .then(() => {
-        if (L.covered === Infinity) return; // finished meanwhile
-        // The ink and how far it reaches are taken together, so the sketch gives way to the ink
-        // only where the ink has actually arrived.
-        L.notes = L.stream.notes().map((n) => [n.pitch, n.start, Math.max(0.05, n.end - n.start), Math.round(n.velocity)]);
-        L.covered = L.stream.covered;
-        liveChanged(L);
         if (status.step.startsWith("listening along")) status.step = "idle";
       })
       .catch((err) => console.error("live", err));
@@ -380,6 +423,7 @@
   Capture.on("open", async ({ id, at, pcm, rate }) => {
     const L = { liveId: id, entryId: uid("sketch"), rate, stream: null, waiting: [to44(pcm, rate)], notes: [] };
     live.set(id, L);
+    ensureSketch(L);
     ensureStream(L);
     await state.ready;
     const e = { id: L.entryId, created_at: at.toISOString(), status: "processing", live: true };
@@ -391,12 +435,8 @@
   Capture.on("frames", ({ id, pcm }) => {
     const L = live.get(id);
     if (!L) return;
-    const x = to44(pcm, L.rate);
-    if (L.stream) {
-      L.stream.push(x);
-      L.sketch?.push(x);
-      pump(L);
-    } else L.waiting.push(x);
+    feed(L, to44(pcm, L.rate));
+    pump(L);
   });
 
   Capture.on("burst", async ({ id, pcm, rate, at }) => {
@@ -423,13 +463,15 @@
 
   // Notes found so far for a sketch still being played (for the live piano roll), and where it's at.
   // { ink: Transkun's settled notes, sketch: Basic Pitch's notes beyond them, covered: seconds settled,
-  //   seconds: heard so far, phase: "tuning" (models still loading) | "live" | "finishing" | "inked" }
+  //   seconds: heard so far,
+  //   phase: "live" | "waiting" (closed, transcriber still loading) | "queued" | "finishing" | "inked" }
   window.LocalLive = (entryId) => {
     for (const L of live.values()) {
       if (L.entryId !== entryId) continue;
       const covered = L.covered || 0;
       const seconds = L.stream ? L.stream.seconds : L.waiting.reduce((a, x) => a + x.length, 0) / 44100;
-      const phase = L.covered === Infinity ? "inked" : !L.stream ? "tuning" : L.finishing ? "finishing" : L.closed ? "queued" : "live";
+      const closed = L.closed || L.finishing;
+      const phase = L.covered === Infinity ? "inked" : closed && !L.stream ? "waiting" : L.finishing ? "finishing" : closed ? "queued" : "live";
       return { ink: L.notes || [], sketch: (L.sketchNotes || []).filter((n) => n[1] >= covered), covered, seconds, phase };
     }
     return null;

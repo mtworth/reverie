@@ -207,12 +207,14 @@
         if (b > a) out.set(buf.subarray(a, b), a - from);
         return out;
       };
-      async function pump() {
+      // onWindow: called as each window's notes land (so a backlog inks in a window at a time).
+      async function pump(onWindow) {
         while (next - padSamples + seg <= len) {
           const i = next;
           next += step;
           await lock(() => runChunk(st, i, audio));
           done = i + step;
+          onWindow?.();
         }
       }
       return {
@@ -225,8 +227,8 @@
           buf.set(x, len);
           len += x.length;
         },
-        pump() {
-          pumping = (pumping || Promise.resolve()).then(pump);
+        pump(onWindow) {
+          pumping = (pumping || Promise.resolve()).then(() => pump(onWindow));
           return pumping;
         },
         // Notes found so far, including ones still sounding (for a live display).
@@ -237,7 +239,7 @@
         },
         // `until` (seconds): where the sound ended. Windows that would start after it hold only
         // silence (the sketch closed after a quiet stretch), so they're skipped; the notes are the same.
-        async finish(until = Infinity) {
+        async finish(until = Infinity, onWindow) {
           await (pumping || Promise.resolve());
           const n = Math.min(len + 2 * padSamples, Math.ceil(until * FS) + padSamples);
           while (next < n) {
@@ -245,6 +247,7 @@
             next += step;
             await lock(() => runChunk(st, i, audio));
             done = i + step;
+            onWindow?.();
           }
           return finishNotes(st);
         },

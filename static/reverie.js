@@ -415,7 +415,8 @@ function pendingCue(id) {
   if (!live) return "writing it down…"; // the whole-recording path, or after a reload
   const clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
   return {
-    tuning: live.seconds ? `heard you · ${clock(live.seconds)} · will transcribe once ready` : "heard you…",
+    // Closed before the transcriber finished loading (its pencil sketch is already showing).
+    waiting: "heard you · notes coming in a moment",
     // After a few quiet seconds the sketch is still open (it closes after 12), so the clock stops.
     live: (Capture.debug?.().burst?.quietMs ?? 0) > 3000 ? "still listening…" : `listening along · ${clock(live.seconds)}`,
     queued: "waiting its turn…",
@@ -671,12 +672,20 @@ function meterLoop() {
 // One quiet note in the header for what's happening in the background: the models loading
 // (with a hairline that fills as they load), or sketches being written down.
 const bgNote = $("modelNote");
+const LONG_WAIT_MS = 4000;
 function backgroundNote() {
   if (!bgNote) return;
   const m = window.ReverieModels?.state;
   let text = "", progress = null, title = "";
-  if (m && m.phase === "failed") text = "couldn't load the listening model · reload to try again";
-  else if (m && m.phase !== "ready" && m.phase !== "idle") {
+  const loading = m && m.phase !== "ready" && m.phase !== "idle" && m.phase !== "failed";
+  // A short wait (most visits: the models are kept in this browser) isn't worth a word.
+  const longWait = loading && performance.now() - (m.since ?? 0) > LONG_WAIT_MS;
+  if (loading && !longWait) {
+    clearTimeout(backgroundNote.later);
+    backgroundNote.later = setTimeout(backgroundNote, LONG_WAIT_MS - (performance.now() - (m.since ?? 0)) + 50);
+  }
+  if (m && m.phase === "failed") text = "couldn't load the transcriber · reload to try again";
+  else if (longWait) {
     text = "getting ready to transcribe";
     progress = m.progress;
     title = "Loading the model that turns your playing into notes. The first time takes a minute; after that it's kept in this browser. Anything you play meanwhile is kept and transcribed once it's ready.";
