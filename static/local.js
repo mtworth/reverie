@@ -204,20 +204,37 @@
     try {
       let mono44;
       const p = pending.get(id);
-      if (p) mono44 = await resample(p.pcm, p.rate, 44100);
+      if (p?.live) mono44 = null; // transcribed while it was played
+      else if (p) mono44 = await resample(p.pcm, p.rate, 44100);
       else {
         // After a reload: decode the stored recording (decoding resamples to the context's 44.1kHz).
         const blob = await getOne("audio", id);
-        if (!blob) throw new Error("no audio");
+        if (!blob) {
+          // The tab closed while this sketch was still being played: nothing to keep.
+          Object.assign(e, { status: "discarded" });
+          await put("entries", e);
+          return;
+        }
         mono44 = (await new OfflineAudioContext(1, 1, 44100).decodeAudioData(await blob.arrayBuffer())).getChannelData(0);
       }
-      status.step = `transcribing ${(mono44.length / 44100).toFixed(0)}s`;
       const t0 = performance.now();
       const { tk, student } = await loadModels();
       const tModels = performance.now();
-      const found = await tk.transcribe([mono44, mono44], (done, total) => (status.step = `transcribing ${done}/${total}`));
+      let found;
+      if (p?.live) {
+        // Only the last window or two are left to do.
+        status.step = "finishing a sketch";
+        const L = p.live;
+        await ensureStream(L);
+        found = await L.stream.finish(p.pcm.length / p.rate + 0.5); // the sketch ends a moment after its last sound
+        mono44 = to44(p.pcm, p.rate);
+        live.delete(L.liveId);
+      } else {
+        status.step = `transcribing ${(mono44.length / 44100).toFixed(0)}s`;
+        found = await tk.transcribe([mono44, mono44], (done, total) => (status.step = `transcribing ${done}/${total}`));
+      }
       const notes = found.map((n) => [n.pitch, +n.start.toFixed(3), +(n.end - n.start).toFixed(3), Math.round(n.velocity)]);
-      pnote("transcribed", { id, seconds: +(mono44.length / 44100).toFixed(1), notes: notes.length,
+      pnote(p?.live ? "finished live sketch" : "transcribed", { id, seconds: +(mono44.length / 44100).toFixed(1), notes: notes.length,
                              waitedForModels: +((tModels - t0) / 1000).toFixed(1), took: +((performance.now() - tModels) / 1000).toFixed(1) });
       if (notes.length < 3) {
         Object.assign(e, { status: "discarded" });
@@ -255,18 +272,96 @@
     return base;
   }
 
-  Capture.on("burst", async ({ pcm, rate, at }) => {
+  // ---------- live: transcribe a sketch while it's being played ----------
+  // Each open sketch gets a Transkun stream; audio is pushed as it arrives and every 8s window is
+  // decoded as soon as it's complete (about 8s behind, ~4.5s of work on a GPU), so its notes can
+  // be drawn as a live piano roll and, when it closes, only the last window or two remain.
+
+  const live = new Map(); // live id -> { liveId, entryId, rate, stream, waiting, notes, pumping }
+
+  // Linear resampling for browsers that won't run the microphone at 44.1kHz.
+  const to44 = (pcm, rate) => {
+    if (rate === 44100) return pcm;
+    const out = new Float32Array(Math.round((pcm.length * 44100) / rate));
+    for (let i = 0; i < out.length; i++) {
+      const x = (i * rate) / 44100, j = Math.floor(x), f = x - j;
+      out[i] = (pcm[j] || 0) * (1 - f) + (pcm[j + 1] || pcm[j] || 0) * f;
+    }
+    return out;
+  };
+
+  function ensureStream(L) {
+    if (!L.ready) {
+      L.ready = loadModels().then(({ tk }) => {
+        L.stream = tk.stream();
+        for (const x of L.waiting) L.stream.push(x);
+        L.waiting = [];
+        pump(L);
+      });
+    }
+    return L.ready;
+  }
+
+  function pump(L) {
+    if (!L.stream) return;
+    L.pumping = (L.pumping || Promise.resolve())
+      .then(() => {
+        status.step = `listening along (${L.stream.seconds.toFixed(0)}s)`;
+        return L.stream.pump();
+      })
+      .then(() => {
+        L.notes = L.stream.notes().map((n) => [n.pitch, n.start, Math.max(0.05, n.end - n.start), Math.round(n.velocity)]);
+        window.dispatchEvent(new CustomEvent("reverie:live", { detail: { id: L.entryId } }));
+        if (status.step.startsWith("listening along")) status.step = "idle";
+      })
+      .catch((err) => console.error("live", err));
+    return L.pumping;
+  }
+
+  Capture.on("open", async ({ id, at, pcm, rate }) => {
+    const L = { liveId: id, entryId: uid("sketch"), rate, stream: null, waiting: [to44(pcm, rate)], notes: [] };
+    live.set(id, L);
+    ensureStream(L);
     await state.ready;
-    const e = { id: uid("sketch"), created_at: at.toISOString(), status: "processing" };
+    const e = { id: L.entryId, created_at: at.toISOString(), status: "processing", live: true };
     state.entries.set(e.id, e);
-    pending.set(e.id, { pcm, rate });
-    // Keep the raw burst too, so a reload mid-processing can recover it.
+    await put("entries", e);
+    changed();
+  });
+
+  Capture.on("frames", ({ id, pcm }) => {
+    const L = live.get(id);
+    if (!L) return;
+    const x = to44(pcm, L.rate);
+    if (L.stream) {
+      L.stream.push(x);
+      pump(L);
+    } else L.waiting.push(x);
+  });
+
+  Capture.on("burst", async ({ id, pcm, rate, at }) => {
+    await state.ready;
+    const L = id && live.get(id);
+    let e = L && state.entries.get(L.entryId);
+    if (!e) {
+      // Injected for testing (or the live entry never got created): the whole-recording path.
+      e = { id: uid("sketch"), created_at: at.toISOString(), status: "processing" };
+      state.entries.set(e.id, e);
+    }
+    pending.set(e.id, L ? { pcm, rate, live: L } : { pcm, rate });
+    // Keep the recording, for playback and so a reload mid-processing can recover it.
     const half = await resample(pcm, rate, 22050);
     await put("audio", wav(half, 22050), e.id);
     await put("entries", e);
     changed();
     queue(e.id);
   });
+
+  // Notes found so far for a sketch still being played (for the live piano roll).
+  window.LocalLive = (entryId) => {
+    for (const L of live.values()) if (L.entryId === entryId) return L.notes;
+    return null;
+  };
 
   // ---------- the API the app expects ----------
 

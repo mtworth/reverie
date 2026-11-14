@@ -398,3 +398,8 @@ body.rv { background: var(--bg); color: var(--ink); }
   .rv-page, .rv-page.rv-enter, .rv-page.rv-enter .rv-entry > *, .rv-line.arrive, .rv-wave, .rv-roll, .rv-map,
   .rv-map-tip, .rv-gate { animation: none !important; transition: none !important; }
 }
+
+/* ---------- the live piano roll of a sketch being played ---------- */
+.rv-live { max-width: 420px; margin: 0.35rem 0 0.1rem; min-height: 4px; }
+.rv-live .rv-roll { animation: none; opacity: 0.75; }
+.rv-live .rv-roll-note.melody { fill: var(--ink-muted); }

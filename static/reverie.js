@@ -183,7 +183,9 @@ function lineHtml(e) {
   store.seen.add(key);
   const time = `<span class="rv-time">${esc(fmtClock(e.created_at))}</span>`;
   if (PENDING.has(e.status)) {
-    return `<li class="rv-line pending${arrive}" data-entry="${e.id}">${time}<div><div class="rv-title">…</div></div></li>`;
+    // In the browser version a sketch being played gets a live piano roll (filled in by drawLive).
+    const roll = window.LocalLive ? `<div class="rv-live" data-live="${e.id}"></div>` : "";
+    return `<li class="rv-line pending${arrive}" data-entry="${e.id}">${time}<div><div class="rv-title">…</div>${roll}</div></li>`;
   }
   if (e.status === "failed") {
     return `<li class="rv-line failed${arrive}" data-entry="${e.id}">${time}<div><div class="rv-title">couldn't make this one out · <a href="#" data-retry="${e.id}">try again</a></div></div></li>`;
@@ -406,7 +408,16 @@ function closeTo(m) {
     .join("")}</ul>`;
 }
 
+// The live piano roll of a sketch still being played: redrawn as each window is transcribed.
+function drawLive(id) {
+  const el = page.querySelector(`[data-live="${id}"]`);
+  const notes = window.LocalLive?.(id);
+  if (el && notes && notes.length) Views.drawRoll(el, notes, { height: 56, span: 60 }); // a sketch runs at most a minute
+}
+window.addEventListener("reverie:live", (ev) => drawLive(ev.detail.id));
+
 function afterRender(r) {
+  page.querySelectorAll("[data-live]").forEach((el) => drawLive(el.dataset.live));
   page.querySelectorAll("canvas[data-wave]").forEach((c) => Views.drawWave(c, c.dataset.wave, waveProgress(c.dataset.wave)));
   // Piano rolls: each occurrence on an idea's page, and each idea's card (its first occurrence).
   page.querySelectorAll("[data-roll]").forEach(async (el) => {

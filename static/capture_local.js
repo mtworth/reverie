@@ -1,29 +1,32 @@
-// Listening for the in-browser Reverie (2026-11-12). Same silence detector as capture.js, but
-// nothing is uploaded: the microphone feeds a two-minute ring buffer in memory, and each burst
-// is handed over as plain samples.
+// Listening for the in-browser Reverie (2026-11-12; streaming 2026-11-13). The microphone feeds
+// a ring buffer in memory (nothing is uploaded). A level detector decides when there's sound:
+// while a sketch is open its audio is handed over as it arrives, so it can be transcribed live;
+// silence is never transcribed (that saves the GPU, the battery and the heat).
 //
-//   Capture.on("state", (state) => …)          // off | starting | listening | paused | blocked | needs-gesture
-//   Capture.on("burst", ({ pcm, rate, at }) …)  // Float32Array mono, its sample rate, Date it began
+//   Capture.on("state", (state) => …)              // off | starting | listening | hearing | paused | blocked | elsewhere | needs-gesture
+//   Capture.on("open",  ({ id, at, pcm, rate }) …)  // a sketch began; pcm = its first audio (incl. a second before)
+//   Capture.on("frames", ({ id, pcm }) …)           // more audio for the open sketch
+//   Capture.on("burst", ({ id, pcm, rate, at }) …)  // the sketch closed; pcm = all of it (id: null when injected)
 //   Capture.ignorePlayback(audioLike); Capture.start(); Capture.pause();
 
 window.Capture = (() => {
   const TICK_MS = 100;
-  const SILENCE_MS = 12000;
-  const PREROLL_MS = 1000;
-  const TAIL_MS = 1500;
-  const MIN_ACTIVE_MS = 600;
-  const MAX_BURST_MS = 2 * 60 * 1000; // longer playing is split into two-minute sketches
-  const RING_S = 130;
+  const SILENCE_MS = 12000; // this long without sound closes a sketch
+  const PREROLL_S = 1;
+  const TAIL_S = 1.5;
+  const MIN_ACTIVE_MS = 600; // less sound than this is a cough, not a sketch
+  const MAX_SKETCH_S = 60; // continuous playing is cut into one-minute sketches
+  const RING_S = 90;
   const THRESHOLD_ABOVE_FLOOR_DB = 12;
   const KEEP_GOING_DB = 6;
   const MIN_THRESHOLD_DB = -65;
   const PLAYBACK_GUARD_MS = 1500;
+  const RATE = 44100; // what the transcriber expects
 
   const cap = { state: "off", on: false, stream: null, ctx: null, analyser: null, buf: null, node: null, ring: null, written: 0,
-                t0: 0, burst: null, floorDb: null, timer: null, playbackUntil: 0, players: [] };
-  const handlers = { state: [], burst: [] };
-  // A short log of what the listener did, for ?debug and for watching a session.
-  const log = [];
+                t0: 0, burst: null, floorDb: null, timer: null, playbackUntil: 0, players: [], lastDb: null, threshold: null };
+  const handlers = { state: [], open: [], frames: [], burst: [] };
+  const log = []; // what the listener did, for ?debug and for watching a session
   const note = (event, extra = {}) => {
     log.push({ at: new Date().toLocaleTimeString(), event, db: cap.lastDb && +cap.lastDb.toFixed(1), threshold: cap.threshold && +cap.threshold.toFixed(1), ...extra });
     if (log.length > 400) log.shift();
@@ -36,6 +39,7 @@ window.Capture = (() => {
       emit("state", s);
     }
   };
+  let nextId = 0;
 
   // Every audio frame goes into the ring; `written` counts samples since listening began.
   const TAP = `class Tap extends AudioWorkletProcessor {
@@ -71,7 +75,11 @@ window.Capture = (() => {
       return setState("blocked");
     }
     if (!cap.ctx) {
-      cap.ctx = new AudioContext();
+      try {
+        cap.ctx = new AudioContext({ sampleRate: RATE });
+      } catch (_) {
+        cap.ctx = new AudioContext(); // the pipeline resamples if the browser won't run at 44.1kHz
+      }
       const source = cap.ctx.createMediaStreamSource(cap.stream);
       cap.analyser = cap.ctx.createAnalyser();
       cap.analyser.fftSize = 2048;
@@ -111,56 +119,79 @@ window.Capture = (() => {
     return 20 * Math.log10(Math.sqrt(s / cap.buf.length) + 1e-9);
   }
 
+  // Samples [from, to) out of the ring.
+  function take(from, to) {
+    const n = cap.ring.length, out = new Float32Array(Math.max(0, to - from));
+    for (let i = 0; i < out.length; i++) out[i] = cap.ring[(from + i) % n];
+    return out;
+  }
+
   function tick() {
     const t = now();
     const db = levelDb();
     cap.lastDb = db;
     if (cap.floorDb === null) cap.floorDb = Math.min(db, -55); // a room, not whatever was already playing
     cap.threshold = Math.max(cap.floorDb + THRESHOLD_ABOVE_FLOOR_DB, MIN_THRESHOLD_DB);
-    // Hysteresis: it takes a clear sound to start a sketch, but a softer one keeps it going, so
-    // quiet passages don't make the recording drop in and out.
+    // Hysteresis: it takes a clear sound to start a sketch, but a softer one keeps it going.
     const heard = db > (cap.burst ? cap.threshold - KEEP_GOING_DB : cap.threshold);
     if (db < cap.floorDb) cap.floorDb = cap.floorDb * 0.7 + db * 0.3;
     else if (!heard) cap.floorDb += 0.03;
     if (cap.players.some((p) => !p.paused) || t < cap.playbackUntil) {
-      if (cap.burst) closeBurst(t);
+      if (cap.burst) closeBurst(true, "playback");
       return;
     }
+    const rate = cap.ctx.sampleRate;
     if (heard) {
       if (!cap.burst) {
-        cap.burst = { startMs: Math.max(0, t - PREROLL_MS), lastActiveMs: t, activeMs: 0, at: new Date() };
+        const oldest = Math.max(0, cap.written - cap.ring.length + rate);
+        cap.burst = { id: null, startSample: Math.max(oldest, cap.written - Math.round(PREROLL_S * rate)), sent: 0,
+                      lastActiveMs: t, lastActiveSample: cap.written, activeMs: 0, at: new Date() };
         note("sound began");
       }
       cap.burst.lastActiveMs = t;
+      cap.burst.lastActiveSample = cap.written;
       cap.burst.activeMs += TICK_MS;
     }
-    if (cap.burst) {
-      if (t - cap.burst.lastActiveMs > SILENCE_MS) closeBurst();
-      else if (t - cap.burst.startMs > MAX_BURST_MS) closeBurst(t);
+    const b = cap.burst;
+    if (b) {
+      // Once it's clearly a sketch, hand its audio over as it arrives.
+      if (!b.id && b.activeMs >= MIN_ACTIVE_MS) {
+        b.id = `live${++nextId}`;
+        b.sent = cap.written;
+        emit("open", { id: b.id, at: b.at, pcm: take(b.startSample, cap.written), rate });
+      } else if (b.id && cap.written > b.sent) {
+        emit("frames", { id: b.id, pcm: take(b.sent, cap.written) });
+        b.sent = cap.written;
+      }
+      if (t - b.lastActiveMs > SILENCE_MS) closeBurst(false, "quiet");
+      else if (cap.written - b.startSample > MAX_SKETCH_S * rate) closeBurst(true, "one-minute cut");
     }
-    // The only sign of life: "hearing you" while sound is coming in.
-    setState(cap.burst && cap.burst.activeMs >= MIN_ACTIVE_MS && t - cap.burst.lastActiveMs < 1500 ? "hearing" : "listening");
+    setState(b && b.activeMs >= MIN_ACTIVE_MS && t - b.lastActiveMs < 1500 ? "hearing" : "listening");
   }
 
-  function closeBurst(forcedEndMs) {
+  // forced: cut right now (limit, playback, pause); otherwise end a moment after the last sound.
+  function closeBurst(forced, why) {
     const b = cap.burst;
     cap.burst = null;
     if (!b) return;
-    if (b.activeMs < MIN_ACTIVE_MS) return note("too brief, ignored", { heardMs: b.activeMs });
-    const rate = cap.ctx.sampleRate, n = cap.ring.length;
-    const end = Math.min(cap.written, Math.round(((forcedEndMs ?? Math.min(now(), b.lastActiveMs + TAIL_MS)) / 1000) * rate));
-    const start = Math.max(0, cap.written - n + rate, Math.round((b.startMs / 1000) * rate));
-    if (end - start < rate) return;
-    const pcm = new Float32Array(end - start);
-    for (let i = 0; i < pcm.length; i++) pcm[i] = cap.ring[(start + i) % n];
-    note(forcedEndMs === undefined ? "sketch closed after quiet" : "sketch cut (2-minute limit, playback or pause)", { seconds: +(pcm.length / rate).toFixed(1) });
-    emit("burst", { pcm, rate, at: b.at });
+    if (!b.id) return note("too brief, ignored", { heardMs: b.activeMs });
+    const rate = cap.ctx.sampleRate;
+    const end = forced ? cap.written : Math.min(cap.written, b.lastActiveSample + Math.round(TAIL_S * rate));
+    if (end > b.sent) emit("frames", { id: b.id, pcm: take(b.sent, end) });
+    const pcm = take(b.startSample, end);
+    note(`sketch closed (${why})`, { seconds: +(pcm.length / rate).toFixed(1) });
+    emit("burst", { id: b.id, pcm, rate, at: b.at });
+    // Continuous playing: the next sketch starts at once, where this one was cut.
+    if (forced && why === "one-minute cut") {
+      cap.burst = { id: null, startSample: end, sent: 0, lastActiveMs: b.lastActiveMs, lastActiveSample: b.lastActiveSample,
+                    activeMs: 0, at: new Date() };
+    }
   }
 
   async function pause() {
     if (!cap.on) return;
     clearInterval(cap.timer);
-    if (cap.burst) closeBurst(now());
+    if (cap.burst) closeBurst(true, "paused");
     cap.on = false;
     releaseLock?.();
     releaseLock = null;
@@ -173,8 +204,21 @@ window.Capture = (() => {
   }
 
   const debug = () => ({ state: cap.state, written: cap.written, db: cap.lastDb, floor: cap.floorDb, threshold: cap.threshold,
-                         burst: cap.burst && { ...cap.burst, sinceMs: now() - cap.burst.startMs }, rate: cap.ctx?.sampleRate, ctx: cap.ctx?.state });
+                         burst: cap.burst && { ...cap.burst, sinceMs: ((cap.written - cap.burst.startSample) / (cap.ctx?.sampleRate || RATE)) * 1000 },
+                         rate: cap.ctx?.sampleRate, ctx: cap.ctx?.state });
   // For testing without a microphone: hand the pipeline a recording as if it had just been heard.
-  const inject = (pcm, rate) => emit("burst", { pcm, rate, at: new Date() });
-  return { start, pause, ignorePlayback, debug, inject, log, on: (type, fn) => handlers[type].push(fn), get state() { return cap.on ? "listening" : cap.state; } };
+  const inject = (pcm, rate) => emit("burst", { id: null, pcm, rate, at: new Date() });
+  // For testing the live path without a microphone: play a recording in as if it were arriving.
+  // `soundS`: where the sound ends (the closed sketch is trimmed there, as the listener does).
+  async function injectLive(pcm, rate, chunkS = 1, speed = 1, soundS = null) {
+    const id = `live${++nextId}`, step = Math.round(chunkS * rate), at = new Date();
+    emit("open", { id, at, pcm: pcm.slice(0, step), rate });
+    for (let i = step; i < pcm.length; i += step) {
+      await new Promise((r) => setTimeout(r, (chunkS * 1000) / speed));
+      emit("frames", { id, pcm: pcm.slice(i, i + step) });
+    }
+    emit("burst", { id, pcm: soundS ? pcm.slice(0, Math.round((soundS + 1.5) * rate)) : pcm, rate, at });
+  }
+  return { start, pause, ignorePlayback, debug, inject, injectLive, log,
+           on: (type, fn) => handlers[type].push(fn), get state() { return cap.on ? "listening" : cap.state; } };
 })();

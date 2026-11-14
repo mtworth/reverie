@@ -369,7 +369,8 @@ window.Views = (() => {
   // ---------- piano roll: the notes themselves, no guessing ----------
   // Time across, pitch up. The melody (smallest-leap voice above G3, as in facts.js) is dark;
   // everything else is light. Notes are drawn short (onsets, not pedal smear), louder = bolder.
-  function drawRoll(container, notes, { height = 120 } = {}) {
+  // `span` (seconds): a fixed time axis, e.g. for a live roll that should grow left to right.
+  function drawRoll(container, notes, { height = 120, span: fixedSpan = null } = {}) {
     container.innerHTML = "";
     if (!notes || !notes.length) return;
     const ns = [...notes].sort((a, b) => a[1] - b[1] || b[0] - a[0]);
@@ -390,7 +391,7 @@ window.Views = (() => {
     const pitches = ns.map((n) => n[0]).sort((a, b) => a - b);
     const q = (f) => pitches[Math.min(pitches.length - 1, Math.floor(f * pitches.length))];
     const lo = Math.min(q(0.03), q(0.5) - 6) - 2, hi = Math.max(q(0.97), q(0.5) + 6) + 2;
-    const span = Math.max(1, ns[ns.length - 1][1] + 0.4);
+    const span = fixedSpan || Math.max(1, ns[ns.length - 1][1] + 0.4);
     const W = 600, H = height, row = H / (hi - lo + 1);
     const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, class: "rv-roll", preserveAspectRatio: "none" });
     svg.style.height = `${H}px`;

@@ -232,9 +232,11 @@
           for (const list of st.eventsByPitch.values()) for (const e of list) if (e.pitch >= 21) all.push(e);
           return all.map(({ start, end, pitch, velocity }) => ({ start, end, pitch, velocity }));
         },
-        async finish() {
+        // `until` (seconds): where the sound ended. Windows that would start after it hold only
+        // silence (the sketch closed after a quiet stretch), so they're skipped; the notes are the same.
+        async finish(until = Infinity) {
           await (pumping || Promise.resolve());
-          const n = len + 2 * padSamples;
+          const n = Math.min(len + 2 * padSamples, Math.ceil(until * FS) + padSamples);
           while (next < n) {
             const i = next;
             next += step;
