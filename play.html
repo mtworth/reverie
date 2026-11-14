@@ -6,8 +6,8 @@
 <title>Reverie</title>
 <!-- In-browser Reverie: nothing leaves this browser (local.js). -->
 <link rel="icon" href="data:," />
-<link rel="stylesheet" href="static/style.css" />
-<link rel="stylesheet" href="static/reverie.css" />
+<link rel="stylesheet" href="static/style.css?v=dfa6f262" />
+<link rel="stylesheet" href="static/reverie.css?v=c0ba0ac5" />
 </head>
 <body class="studio rv">
   <header class="rv-head">
@@ -31,12 +31,12 @@
   <audio id="player" preload="metadata"></audio>
 
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.webgpu.min.js"></script>
-  <script src="static/transkun.js"></script>
-  <script src="static/student.js"></script>
-  <script src="static/facts.js"></script>
-  <script src="static/views.js"></script>
-  <script src="static/capture_local.js"></script>
-  <script src="static/local.js"></script>
+  <script src="static/transkun.js?v=2b791cd1"></script>
+  <script src="static/student.js?v=762de29d"></script>
+  <script src="static/facts.js?v=2d8eecd4"></script>
+  <script src="static/views.js?v=38c2afee"></script>
+  <script src="static/capture_local.js?v=c2c2587a"></script>
+  <script src="static/local.js?v=269e07d0"></script>
   <div class="rv-loading" id="loading">
     <p class="rv-loading-word">tap anywhere to begin</p>
     <div class="rv-loading-bar"><div id="loadingFill"></div></div>
@@ -88,7 +88,7 @@
       );
     })();
   </script>
-  <script src="static/reverie.js"></script>
+  <script src="static/reverie.js?v=c180d82c"></script>
   <script>
     // ?debug: live listening readout (level vs. threshold, burst, pipeline).
     if (new URLSearchParams(location.search).has("debug")) {
