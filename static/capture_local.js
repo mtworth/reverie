@@ -22,6 +22,12 @@ window.Capture = (() => {
   const cap = { state: "off", on: false, stream: null, ctx: null, analyser: null, buf: null, node: null, ring: null, written: 0,
                 t0: 0, burst: null, floorDb: null, timer: null, playbackUntil: 0, players: [] };
   const handlers = { state: [], burst: [] };
+  // A short log of what the listener did, for ?debug and for watching a session.
+  const log = [];
+  const note = (event, extra = {}) => {
+    log.push({ at: new Date().toLocaleTimeString(), event, db: cap.lastDb && +cap.lastDb.toFixed(1), threshold: cap.threshold && +cap.threshold.toFixed(1), ...extra });
+    if (log.length > 400) log.shift();
+  };
   const emit = (type, x) => handlers[type].forEach((fn) => fn(x));
   const now = () => performance.now() - cap.t0;
   const setState = (s) => {
@@ -121,7 +127,10 @@ window.Capture = (() => {
       return;
     }
     if (heard) {
-      if (!cap.burst) cap.burst = { startMs: Math.max(0, t - PREROLL_MS), lastActiveMs: t, activeMs: 0, at: new Date() };
+      if (!cap.burst) {
+        cap.burst = { startMs: Math.max(0, t - PREROLL_MS), lastActiveMs: t, activeMs: 0, at: new Date() };
+        note("sound began");
+      }
       cap.burst.lastActiveMs = t;
       cap.burst.activeMs += TICK_MS;
     }
@@ -136,13 +145,15 @@ window.Capture = (() => {
   function closeBurst(forcedEndMs) {
     const b = cap.burst;
     cap.burst = null;
-    if (!b || b.activeMs < MIN_ACTIVE_MS) return;
+    if (!b) return;
+    if (b.activeMs < MIN_ACTIVE_MS) return note("too brief, ignored", { heardMs: b.activeMs });
     const rate = cap.ctx.sampleRate, n = cap.ring.length;
     const end = Math.min(cap.written, Math.round(((forcedEndMs ?? Math.min(now(), b.lastActiveMs + TAIL_MS)) / 1000) * rate));
     const start = Math.max(0, cap.written - n + rate, Math.round((b.startMs / 1000) * rate));
     if (end - start < rate) return;
     const pcm = new Float32Array(end - start);
     for (let i = 0; i < pcm.length; i++) pcm[i] = cap.ring[(start + i) % n];
+    note(forcedEndMs === undefined ? "sketch closed after quiet" : "sketch cut (2-minute limit, playback or pause)", { seconds: +(pcm.length / rate).toFixed(1) });
     emit("burst", { pcm, rate, at: b.at });
   }
 
@@ -165,5 +176,5 @@ window.Capture = (() => {
                          burst: cap.burst && { ...cap.burst, sinceMs: now() - cap.burst.startMs }, rate: cap.ctx?.sampleRate, ctx: cap.ctx?.state });
   // For testing without a microphone: hand the pipeline a recording as if it had just been heard.
   const inject = (pcm, rate) => emit("burst", { pcm, rate, at: new Date() });
-  return { start, pause, ignorePlayback, debug, inject, on: (type, fn) => handlers[type].push(fn), get state() { return cap.on ? "listening" : cap.state; } };
+  return { start, pause, ignorePlayback, debug, inject, log, on: (type, fn) => handlers[type].push(fn), get state() { return cap.on ? "listening" : cap.state; } };
 })();

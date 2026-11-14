@@ -186,8 +186,17 @@
   let chain = Promise.resolve();
   const pending = new Map(); // entry id -> { pcm, rate } until it's processed
   function queue(id) {
-    chain = chain.then(() => process(id)).catch((err) => console.error("pipeline", err));
+    const once = () =>
+      navigator.locks
+        ? navigator.locks.request(`reverie-sketch-${id}`, { ifAvailable: true }, (lock) => (lock ? process(id) : null))
+        : process(id);
+    chain = chain.then(once).catch((err) => console.error("pipeline", err));
   }
+  const plog = []; // pipeline timings, for watching a session
+  const pnote = (event, extra = {}) => {
+    plog.push({ at: new Date().toLocaleTimeString(), event, ...extra });
+    if (plog.length > 200) plog.shift();
+  };
 
   async function process(id) {
     const e = state.entries.get(id);
@@ -203,9 +212,13 @@
         mono44 = (await new OfflineAudioContext(1, 1, 44100).decodeAudioData(await blob.arrayBuffer())).getChannelData(0);
       }
       status.step = `transcribing ${(mono44.length / 44100).toFixed(0)}s`;
+      const t0 = performance.now();
       const { tk, student } = await loadModels();
+      const tModels = performance.now();
       const found = await tk.transcribe([mono44, mono44], (done, total) => (status.step = `transcribing ${done}/${total}`));
       const notes = found.map((n) => [n.pitch, +n.start.toFixed(3), +(n.end - n.start).toFixed(3), Math.round(n.velocity)]);
+      pnote("transcribed", { id, seconds: +(mono44.length / 44100).toFixed(1), notes: notes.length,
+                             waitedForModels: +((tModels - t0) / 1000).toFixed(1), took: +((performance.now() - tModels) / 1000).toFixed(1) });
       if (notes.length < 3) {
         Object.assign(e, { status: "discarded" });
         await put("entries", e);
@@ -450,6 +463,7 @@
   }
   window.LocalPlayer = new LocalPlayer();
   window.LocalStatus = status;
+  window.ReverieLog = () => ({ listener: Capture.log, pipeline: plog, status: { ...status }, queue: [...state.entries.values()].filter((e) => e.status === "processing").length });
 
 
 })();
