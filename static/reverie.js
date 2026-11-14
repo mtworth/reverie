@@ -415,7 +415,7 @@ function pendingCue(id) {
   if (!live) return "writing it down…"; // the whole-recording path, or after a reload
   const clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
   return {
-    tuning: live.seconds ? `heard you · ${clock(live.seconds)} · I'll write it down once I'm tuned in` : "heard you…",
+    tuning: live.seconds ? `heard you · ${clock(live.seconds)} · will transcribe once ready` : "heard you…",
     // After a few quiet seconds the sketch is still open (it closes after 12), so the clock stops.
     live: (Capture.debug?.().burst?.quietMs ?? 0) > 3000 ? "still listening…" : `listening along · ${clock(live.seconds)}`,
     queued: "waiting its turn…",
@@ -668,7 +668,7 @@ function meterLoop() {
   requestAnimationFrame(frame);
 }
 
-// One quiet note in the header for what's happening in the background: the models tuning in
+// One quiet note in the header for what's happening in the background: the models loading
 // (with a hairline that fills as they load), or sketches being written down.
 const bgNote = $("modelNote");
 function backgroundNote() {
@@ -677,9 +677,9 @@ function backgroundNote() {
   let text = "", progress = null, title = "";
   if (m && m.phase === "failed") text = "couldn't load the listening model · reload to try again";
   else if (m && m.phase !== "ready" && m.phase !== "idle") {
-    text = "tuning in";
+    text = "getting ready to transcribe";
     progress = m.progress;
-    title = "Getting the transcription model ready. The first time takes a minute; after that it's kept in this browser.";
+    title = "Loading the model that turns your playing into notes. The first time takes a minute; after that it's kept in this browser. Anything you play meanwhile is kept and transcribed once it's ready.";
   } else {
     const writing = entries().filter((e) => PENDING.has(e.status) && window.LocalLive?.(e.id)?.phase !== "live").length;
     if (writing) text = writing === 1 ? "writing it down" : `writing down ${writing} sketches`;
