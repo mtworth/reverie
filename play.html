@@ -20,6 +20,7 @@
     <button class="rv-listen" id="listen" data-state="off" title="Tap to pause or resume listening">
       <span class="rv-dot"></span><span id="listenWord">listen</span>
     </button>
+    <span class="rv-model-note" id="modelNote"></span>
   </header>
 
   <main class="rv-page" id="page"></main>
@@ -37,41 +38,52 @@
   <script src="static/capture_local.js"></script>
   <script src="static/local.js"></script>
   <div class="rv-loading" id="loading">
-    <p class="rv-loading-word">getting ready</p>
+    <p class="rv-loading-word">tap anywhere to begin</p>
     <div class="rv-loading-bar"><div id="loadingFill"></div></div>
     <p class="rv-loading-note" id="loadingNote">&nbsp;</p>
   </div>
   <script>
-    // Loading screen: download (first time only) and warm up the models before listening, so the
-    // first sketch comes back as fast as possible. The tap that dismisses it starts the microphone.
+    // Start screen: listening can begin at once (the tap is what lets the browser use the
+    // microphone); the models download (first time only) and warm up in the background, and
+    // anything played meanwhile waits its turn. Text changes fade rather than flip.
     window.DEFER_LISTENING = true;
     (() => {
-      const box = document.getElementById("loading"), word = box.querySelector(".rv-loading-word");
-      const fill = document.getElementById("loadingFill"), note = document.getElementById("loadingNote");
+      const box = document.getElementById("loading"), fill = document.getElementById("loadingFill");
+      const note = document.getElementById("loadingNote"), header = document.getElementById("modelNote");
       const mb = (x) => (x / 1e6).toFixed(0);
+      const say = (el, text) => {
+        if (!el || el.dataset.text === text) return;
+        el.dataset.text = text;
+        el.style.opacity = 0;
+        setTimeout(() => {
+          el.textContent = text || "\u00a0";
+          el.style.opacity = text ? 1 : 0;
+        }, 250);
+      };
+      box.addEventListener("click", () => {
+        box.classList.add("gone");
+        Capture.start();
+      }, { once: true });
+      say(header, "getting ready");
       ReverieModels.load((phase, done, total) => {
-        if (phase === "download" && total) {
+        if (phase === "download" && total && done < total) {
           fill.style.width = `${Math.min(100, (100 * done) / total).toFixed(1)}%`;
-          note.textContent = done < total ? `downloading the listening model · ${mb(done)} of ${mb(total)} MB (first time only)` : "";
+          say(note, `getting the listening model ready · ${mb(done)} of ${mb(total)} MB, first time only`);
         }
         if (phase === "warm") {
           fill.style.width = "100%";
-          word.textContent = "warming up";
-          note.textContent = "\u00a0";
+          say(note, "getting ready");
         }
       }).then(
         () => {
-          word.textContent = "tap anywhere to begin listening";
           box.classList.add("ready");
-          box.addEventListener("click", () => {
-            box.classList.add("gone");
-            Capture.start();
-          }, { once: true });
+          say(note, "");
+          say(header, "");
         },
         (err) => {
           console.error(err);
-          word.textContent = "couldn't load the listening model";
-          note.textContent = "Check your connection and reload the page.";
+          say(note, "couldn't load the listening model · check your connection and reload");
+          say(header, "couldn't load the listening model");
         },
       );
     })();

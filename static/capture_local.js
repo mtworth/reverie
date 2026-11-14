@@ -15,6 +15,7 @@ window.Capture = (() => {
   const MAX_BURST_MS = 2 * 60 * 1000; // longer playing is split into two-minute sketches
   const RING_S = 130;
   const THRESHOLD_ABOVE_FLOOR_DB = 12;
+  const KEEP_GOING_DB = 6;
   const MIN_THRESHOLD_DB = -65;
   const PLAYBACK_GUARD_MS = 1500;
 
@@ -36,8 +37,22 @@ window.Capture = (() => {
   }
   registerProcessor("reverie-tap", Tap);`;
 
+  // Only one tab listens at a time; the lock is held until this tab pauses or closes.
+  let releaseLock = null;
+  async function takeLock() {
+    if (releaseLock || !navigator.locks) return true;
+    return new Promise((resolve) => {
+      navigator.locks.request("reverie-listening", { ifAvailable: true }, (lock) => {
+        if (!lock) return resolve(false);
+        resolve(true);
+        return new Promise((r) => (releaseLock = r));
+      });
+    });
+  }
+
   async function start() {
     if (cap.state === "starting" || cap.on) return;
+    if (!(await takeLock())) return setState("elsewhere");
     setState("starting");
     try {
       if (!cap.stream) {
@@ -96,8 +111,9 @@ window.Capture = (() => {
     cap.lastDb = db;
     if (cap.floorDb === null) cap.floorDb = Math.min(db, -55); // a room, not whatever was already playing
     cap.threshold = Math.max(cap.floorDb + THRESHOLD_ABOVE_FLOOR_DB, MIN_THRESHOLD_DB);
-    const threshold = Math.max(cap.floorDb + THRESHOLD_ABOVE_FLOOR_DB, MIN_THRESHOLD_DB);
-    const heard = db > threshold;
+    // Hysteresis: it takes a clear sound to start a sketch, but a softer one keeps it going, so
+    // quiet passages don't make the recording drop in and out.
+    const heard = db > (cap.burst ? cap.threshold - KEEP_GOING_DB : cap.threshold);
     if (db < cap.floorDb) cap.floorDb = cap.floorDb * 0.7 + db * 0.3;
     else if (!heard) cap.floorDb += 0.03;
     if (cap.players.some((p) => !p.paused) || t < cap.playbackUntil) {
@@ -135,6 +151,8 @@ window.Capture = (() => {
     clearInterval(cap.timer);
     if (cap.burst) closeBurst(now());
     cap.on = false;
+    releaseLock?.();
+    releaseLock = null;
     setState("paused");
   }
 

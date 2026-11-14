@@ -590,6 +590,7 @@ const LISTEN_WORDS = {
   starting: "listening",
   listening: "listening",
   hearing: "hearing you",
+  elsewhere: "listening in another tab",
   paused: "paused",
   blocked: "microphone off",
   "needs-gesture": "listen",
