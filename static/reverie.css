@@ -352,10 +352,47 @@ body.rv { background: var(--bg); color: var(--ink); }
   font-family: var(--serif); text-align: center; padding: 0 1.5rem;
 }
 .rv-loading.ready { cursor: pointer; }
-.rv-loading.gone { display: none; }
+.rv-loading.gone { opacity: 0; pointer-events: none; transition: opacity 0.9s ease; }
 .rv-loading-word { font-style: italic; font-size: 1.5rem; color: var(--ink); margin: 0; }
 .rv-loading.ready .rv-loading-word { color: var(--ink-muted); }
 .rv-loading.ready .rv-loading-bar { visibility: hidden; }
 .rv-loading-bar { width: min(280px, 70vw); height: 2px; background: var(--rule); border-radius: 1px; overflow: hidden; }
 .rv-loading-bar div { height: 100%; width: 0; background: var(--ink-muted); transition: width 0.2s; }
 .rv-loading-note { font-style: italic; font-size: 0.9rem; color: var(--ink-faint); margin: 0; min-height: 1.3em; }
+
+/* ---------- fades: lighter, slower, quieter ---------- */
+
+@keyframes rv-fade-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+@keyframes rv-fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* Between pages: the old one leaves quickly, the new one settles in. */
+.rv-page { transition: opacity 0.17s ease-in; }
+.rv-page.rv-leave { opacity: 0; }
+.rv-page.rv-enter { animation: rv-fade-in 0.55s ease-out both; }
+
+/* An idea's entry appears a line at a time, like ink settling. */
+.rv-page.rv-enter .rv-entry > * { animation: rv-fade-in 0.7s ease-out both; }
+.rv-page.rv-enter .rv-entry > :nth-child(2) { animation-delay: 0.1s; }
+.rv-page.rv-enter .rv-entry > :nth-child(3) { animation-delay: 0.18s; }
+.rv-page.rv-enter .rv-entry > :nth-child(4) { animation-delay: 0.26s; }
+.rv-page.rv-enter .rv-entry > :nth-child(5) { animation-delay: 0.34s; }
+.rv-page.rv-enter .rv-entry > :nth-child(n + 6) { animation-delay: 0.42s; }
+
+/* A new line arriving drifts up a little as it appears. */
+.rv-line.arrive { animation: rv-fade-in 1.8s ease-out both; }
+
+/* Colours ease rather than snap. */
+.rv-nav a, .rv-listen, .rv-time, .rv-title, .rv-ideas a, .rv-arrange button, .rv-idea-row .name,
+.rv-card, .rv-card .name, .rv-heard .when, .rv-back, .rv-seealso a, .rv-close a, .rv-same, .rv-heard .notthis,
+.rv-map-dot, .rv-dot { transition: color 0.35s ease, border-color 0.35s ease, background-color 0.35s ease, opacity 0.35s ease; }
+
+/* Waveforms, piano rolls and the map fade in on arriving at a page (not on quiet refreshes). */
+.rv-page.rv-enter .rv-wave, .rv-page.rv-enter .rv-roll, .rv-page.rv-enter .rv-map,
+.rv-line.arrive .rv-wave { animation: rv-fade 0.8s ease-out both; }
+.rv-map-tip { animation: rv-fade 0.25s ease-out both; }
+.rv-gate { animation: rv-fade 0.6s ease-out both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .rv-page, .rv-page.rv-enter, .rv-page.rv-enter .rv-entry > *, .rv-line.arrive, .rv-wave, .rv-roll, .rv-map,
+  .rv-map-tip, .rv-gate { animation: none !important; transition: none !important; }
+}

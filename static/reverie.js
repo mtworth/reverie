@@ -97,10 +97,7 @@ function route() {
   return { name: ["today", "journal", "library", "idea"].includes(name) ? name : "today", arg };
 }
 
-window.addEventListener("hashchange", () => {
-  render(true);
-  window.scrollTo(0, 0);
-});
+window.addEventListener("hashchange", () => render(true));
 
 function render(force = false) {
   if (document.activeElement?.isContentEditable) return; // don't disturb a rename
@@ -112,11 +109,35 @@ function render(force = false) {
     r.name === "journal" ? journalPage() : r.name === "library" ? libraryPage() : r.name === "idea" ? ideaPage(r.arg) : todayPage();
   if (!force && html === store.lastHtml) return; // nothing changed: leave the page still
   store.lastHtml = html;
-  page.innerHTML = html;
-  afterRender(r);
-  markPlaying();
-  revealNewest();
+
+  // A different page (or a different way of seeing the library) fades: out quickly, then in
+  // slowly. Updates to the same page — a new line arriving, a map layout gliding — don't.
+  const where = [r.name, r.arg || "", r.name === "library" ? `${getPref("view", "list", SEE_AS)}:${getPref("arrange", "recent", ARRANGEMENTS)}` : ""].join("/");
+  const moved = store.where !== undefined && where !== store.where;
+  store.where = where;
+  const swap = () => {
+    page.innerHTML = html;
+    if (moved) window.scrollTo(0, 0);
+    page.classList.remove("rv-leave", "rv-enter");
+    if (moved || !store.shown) {
+      void page.offsetWidth; // restart the animation
+      page.classList.add("rv-enter");
+      // Off again once everything has settled, so later quiet refreshes don't replay it.
+      clearTimeout(store.enterTimer);
+      store.enterTimer = setTimeout(() => page.classList.remove("rv-enter"), 1400);
+    }
+    store.shown = true;
+    afterRender(r);
+    markPlaying();
+    revealNewest();
+  };
+  clearTimeout(store.fadeTimer);
+  if (moved && !REDUCED_MOTION && page.childElementCount) {
+    page.classList.add("rv-leave");
+    store.fadeTimer = setTimeout(swap, 170);
+  } else swap();
 }
+const REDUCED_MOTION = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
 // ---------- Today ----------
 

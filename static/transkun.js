@@ -82,100 +82,172 @@
     // The attribute network is tiny and its batch size varies; WASM is the safe home for it.
     const attrSess = await ort.InferenceSession.create(src("transkun_attr.onnx"), { executionProviders: ["wasm"] });
 
-    async function transcribe(channels, onProgress) {
-      const n0 = channels[0].length;
-      const pad = SEG_S - STEP_S;
-      const padSamples = Math.ceil(pad * FS);
-      const n = n0 + 2 * padSamples;
-      const step = Math.ceil((STEP_S * FS) / HOP) * HOP;
-      const seg = Math.ceil(SEG_S * FS);
-      const lastFrame = Math.round(seg / HOP);
-      const frameDur = HOP / FS;
-      const stepFrames = Math.floor(step / HOP);
-      let startPos = new Array(NSYM).fill(Math.floor((pad * FS) / HOP));
-      const eventsByPitch = new Map();
-      const total = Math.ceil(n / step);
-      let done = 0;
+    // Geometry of the sliding window (independent of the recording's length).
+    const pad = SEG_S - STEP_S;
+    const padSamples = Math.ceil(pad * FS);
+    const step = Math.ceil((STEP_S * FS) / HOP) * HOP;
+    const seg = Math.ceil(SEG_S * FS);
+    const lastFrame = Math.round(seg / HOP);
+    const frameDur = HOP / FS;
+    const stepFrames = Math.floor(step / HOP);
+    const newState = () => ({ startPos: new Array(NSYM).fill(Math.floor((pad * FS) / HOP)), eventsByPitch: new Map() });
 
-      for (let i = 0; i < n; i += step) {
-        // The padded recording, sliced; anything past the end stays zero.
-        const chunk = new Float32Array(2 * seg);
-        for (let c = 0; c < 2; c++) {
-          const src = channels[c];
-          const from = Math.max(0, i - padSamples), to = Math.min(n0, i - padSamples + seg);
-          if (to > from) chunk.set(src.subarray(from, to), c * seg + (from - (i - padSamples)));
-        }
-        const res = await scoreSess.run({ audio: new ort.Tensor("float32", chunk, [2, seg]) });
-        const score = res.score.data, ctx = res.ctx.data;
-        const T = res.score.dims[2];
-        const begin = i / FS - pad;
+    // ONNX Runtime Web can't run sessions concurrently; every run goes through this queue
+    // (also exported, so other models on the page can share it).
+    let gate = Promise.resolve();
+    const lock = (fn) => {
+      const r = gate.then(fn);
+      gate = r.catch(() => {});
+      return r;
+    };
 
-        // Decode every pitch, then collect interval features for the attribute network.
-        const intervals = [];
-        for (let p = 0; p < NSYM; p++) intervals.push(viterbiPitch(score, p, T, startPos[p]));
-        const nInt = intervals.reduce((s, iv) => s + iv.length, 0);
-        let vel = [], of = [], pres = [];
-        if (nInt > 0) {
-          const feats = new Float32Array(nInt * 3 * D);
-          let k = 0;
-          intervals.forEach((iv, p) => iv.forEach(([a, b]) => {
-            const ca = (p * T + a) * D, cb = (p * T + b) * D, o = k * 3 * D;
-            for (let d = 0; d < D; d++) {
-              const x = ctx[ca + d], y = ctx[cb + d];
-              feats[o + d] = x; feats[o + D + d] = y; feats[o + 2 * D + d] = x * y;
-            }
-            k++;
-          }));
-          const r = await attrSess.run({ attr: new ort.Tensor("float32", feats, [nInt, 3 * D]) });
-          vel = Array.from(r.velocity.data, Number); of = r.of.data; pres = r.presence.data;
-        }
+    // One window starting at sample i (the body of ModelTransformer.transcribe's loop).
+    // `audio(from, to)` gives samples [from, to) with zeros where there's no audio.
+    async function runChunk(st, i, audio) {
+      const chunk = new Float32Array(2 * seg);
+      for (let c = 0; c < 2; c++) chunk.set(audio(c, i - padSamples, i - padSamples + seg), c * seg);
+      const res = await scoreSess.run({ audio: new ort.Tensor("float32", chunk, [2, seg]) });
+      const score = res.score.data, ctx = res.ctx.data;
+      const T = res.score.dims[2];
+      const begin = i / FS - pad;
 
-        // Notes for this chunk (ModelTransformer.transcribeFrames), then merge across chunks.
-        const lastP = [], events = [];
+      // Decode every pitch, then collect interval features for the attribute network.
+      const intervals = [];
+      for (let p = 0; p < NSYM; p++) intervals.push(viterbiPitch(score, p, T, st.startPos[p]));
+      const nInt = intervals.reduce((s, iv) => s + iv.length, 0);
+      let vel = [], of = [], pres = [];
+      if (nInt > 0) {
+        const feats = new Float32Array(nInt * 3 * D);
         let k = 0;
-        intervals.forEach((iv, p) => {
-          let lastEnd = 0, curLast = 0;
-          for (const [a, b] of iv) {
-            let start = Math.max((a + of[2 * k]) * frameDur, lastEnd);
-            let end = Math.max((b + of[2 * k + 1]) * frameDur, start + 1e-8);
-            lastEnd = end;
-            const hasOnset = a > 0 || !!pres[2 * k];
-            const hasOffset = b < lastFrame || !!pres[2 * k + 1];
-            if (hasOffset) curLast = b;
-            start = Math.max(start + begin, 0);
-            end = Math.max(end + begin, start);
-            events.push({ start, end, pitch: PITCHES[p], velocity: vel[k], hasOnset, hasOffset });
-            k++;
+        intervals.forEach((iv, p) => iv.forEach(([a, b]) => {
+          const ca = (p * T + a) * D, cb = (p * T + b) * D, o = k * 3 * D;
+          for (let d = 0; d < D; d++) {
+            const x = ctx[ca + d], y = ctx[cb + d];
+            feats[o + d] = x; feats[o + D + d] = y; feats[o + 2 * D + d] = x * y;
           }
-          lastP.push(curLast);
-        });
-        events.sort((x, y) => x.start - y.start || x.end - y.end || x.pitch - y.pitch);
-        startPos = lastP.map((v) => Math.max(v - stepFrames, 0));
-
-        for (const e of events) {
-          const list = eventsByPitch.get(e.pitch) || [];
-          if (list.length) {
-            const prev = list[list.length - 1];
-            if (e.start < prev.end) {
-              if (e.hasOnset) list[list.length - 1] = e;
-              else { prev.hasOffset = e.hasOffset; prev.end = Math.max(e.end, prev.end); }
-              continue;
-            }
-          }
-          if (e.hasOnset) { list.push(e); eventsByPitch.set(e.pitch, list); }
-        }
-        onProgress?.(++done, total);
+          k++;
+        }));
+        const r = await attrSess.run({ attr: new ort.Tensor("float32", feats, [nInt, 3 * D]) });
+        vel = Array.from(r.velocity.data, Number); of = r.of.data; pres = r.presence.data;
       }
 
-      for (const list of eventsByPitch.values()) if (list.length) list[list.length - 1].hasOffset = true;
+      // Notes for this chunk (ModelTransformer.transcribeFrames), then merge across chunks.
+      const lastP = [], events = [];
+      let k = 0;
+      intervals.forEach((iv, p) => {
+        let lastEnd = 0, curLast = 0;
+        for (const [a, b] of iv) {
+          let start = Math.max((a + of[2 * k]) * frameDur, lastEnd);
+          let end = Math.max((b + of[2 * k + 1]) * frameDur, start + 1e-8);
+          lastEnd = end;
+          const hasOnset = a > 0 || !!pres[2 * k];
+          const hasOffset = b < lastFrame || !!pres[2 * k + 1];
+          if (hasOffset) curLast = b;
+          start = Math.max(start + begin, 0);
+          end = Math.max(end + begin, start);
+          events.push({ start, end, pitch: PITCHES[p], velocity: vel[k], hasOnset, hasOffset });
+          k++;
+        }
+        lastP.push(curLast);
+      });
+      events.sort((x, y) => x.start - y.start || x.end - y.end || x.pitch - y.pitch);
+      st.startPos = lastP.map((v) => Math.max(v - stepFrames, 0));
+
+      for (const e of events) {
+        const list = st.eventsByPitch.get(e.pitch) || [];
+        if (list.length) {
+          const prev = list[list.length - 1];
+          if (e.start < prev.end) {
+            if (e.hasOnset) list[list.length - 1] = e;
+            else { prev.hasOffset = e.hasOffset; prev.end = Math.max(e.end, prev.end); }
+            continue;
+          }
+        }
+        if (e.hasOnset) { list.push(e); st.eventsByPitch.set(e.pitch, list); }
+      }
+    }
+
+    function finishNotes(st) {
+      for (const list of st.eventsByPitch.values()) if (list.length) list[list.length - 1].hasOffset = true;
       const all = [];
-      for (const list of eventsByPitch.values()) for (const e of list) if (e.hasOffset) all.push(e);
+      for (const list of st.eventsByPitch.values()) for (const e of list) if (e.hasOffset) all.push(e);
       return resolveOverlapping(all)
         .filter((e) => e.pitch >= 21)  // -64 / -67 are the sustain and soft pedals
         .map(({ start, end, pitch, velocity }) => ({ start, end, pitch, velocity }));
     }
 
-    return { transcribe };
+    // A whole recording at once.
+    async function transcribe(channels, onProgress) {
+      const n0 = channels[0].length, n = n0 + 2 * padSamples, total = Math.ceil(n / step);
+      const st = newState();
+      const audio = (c, from, to) => {
+        const out = new Float32Array(to - from);
+        const a = Math.max(0, from), b = Math.min(n0, to);
+        if (b > a) out.set(channels[c].subarray(a, b), a - from);
+        return out;
+      };
+      let done = 0;
+      for (let i = 0; i < n; i += step) {
+        await lock(() => runChunk(st, i, audio));
+        onProgress?.(++done, total);
+      }
+      return finishNotes(st);
+    }
+
+    // While it's being played: push 44.1kHz mono as it arrives; each window is decoded as soon as
+    // its audio is complete (about 8s behind), so finishing only has the last window or two left.
+    function stream() {
+      const st = newState();
+      let buf = new Float32Array(FS * 30), len = 0, next = 0, pumping = null;
+      const audio = (_c, from, to) => {
+        const out = new Float32Array(to - from);
+        const a = Math.max(0, from), b = Math.min(len, to);
+        if (b > a) out.set(buf.subarray(a, b), a - from);
+        return out;
+      };
+      async function pump() {
+        while (next - padSamples + seg <= len) {
+          const i = next;
+          next += step;
+          await lock(() => runChunk(st, i, audio));
+        }
+      }
+      return {
+        push(x) {
+          if (len + x.length > buf.length) {
+            const bigger = new Float32Array(Math.max(buf.length * 2, len + x.length));
+            bigger.set(buf.subarray(0, len));
+            buf = bigger;
+          }
+          buf.set(x, len);
+          len += x.length;
+        },
+        pump() {
+          pumping = (pumping || Promise.resolve()).then(pump);
+          return pumping;
+        },
+        // Notes found so far, including ones still sounding (for a live display).
+        notes() {
+          const all = [];
+          for (const list of st.eventsByPitch.values()) for (const e of list) if (e.pitch >= 21) all.push(e);
+          return all.map(({ start, end, pitch, velocity }) => ({ start, end, pitch, velocity }));
+        },
+        async finish() {
+          await (pumping || Promise.resolve());
+          const n = len + 2 * padSamples;
+          while (next < n) {
+            const i = next;
+            next += step;
+            await lock(() => runChunk(st, i, audio));
+          }
+          return finishNotes(st);
+        },
+        get seconds() { return len / FS; },
+        get audio() { return buf.subarray(0, len); },
+      };
+    }
+
+    return { transcribe, stream, lock };
   }
 
   window.Transkun = { load, decodeAudio };
