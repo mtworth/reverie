@@ -15,6 +15,9 @@ body.rv { background: var(--bg); color: var(--ink); }
   font-family: var(--serif);
 }
 .rv-word {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
   font-style: italic;
   font-size: 1.3rem;
   color: var(--ink);
@@ -404,3 +407,8 @@ body.rv { background: var(--bg); color: var(--ink); }
 .rv-live .rv-roll { animation: none; opacity: 0.75; }
 .rv-live .rv-roll-note.melody { fill: var(--ink-muted); }
 .rv-roll-sketch { fill: none; stroke: var(--ink-faint); stroke-width: 1.4; stroke-linecap: round; opacity: 0.8; vector-effect: non-scaling-stroke; }
+
+/* the Drift mark beside the wordmark */
+.rv-mark { width: 30px; height: 17px; overflow: visible; }
+.rv-mark path { fill: none; stroke: var(--ink); stroke-width: 11; stroke-linecap: round; stroke-linejoin: round; }
+.rv-mark circle { fill: var(--accent); }
