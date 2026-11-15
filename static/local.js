@@ -252,7 +252,7 @@
     const p = pending.get(id);
     try {
       let mono44;
-      if (p?.live) mono44 = null; // transcribed while it was played
+      if (p?.live || p?.notes) mono44 = p.pcm; // transcribed while it was played (44.1kHz already)
       else if (p) mono44 = await resample(p.pcm, p.rate, 44100);
       else {
         // After a reload: decode the stored recording (decoding resamples to the context's 44.1kHz).
@@ -268,26 +268,36 @@
       const t0 = performance.now();
       const { tk, student } = await loadModels();
       const tModels = performance.now();
-      let found;
-      if (p?.live) {
+      const asNotes = (found, from = 0) => found.filter((n) => n.start >= from)
+        .map((n) => [n.pitch, +(n.start - from).toFixed(3), +(n.end - n.start).toFixed(3), Math.round(n.velocity)]);
+      let notes;
+      if (p?.notes) {
+        notes = p.notes; // a part cut off while the playing went on: its notes were already settled
+      } else if (p?.live) {
         // Only the last window or two are left to do.
         status.step = "finishing a sketch";
         const L = p.live;
         L.finishing = true;
         liveChanged(L);
         await ensureStream(L);
-        found = await L.stream.finish(p.pcm.length / p.rate + 0.5, () => inkSoFar(L)); // ends a moment after its last sound
+        // Ends a moment after its last sound. (The stream's times run from the start of the playing;
+        // this sketch is the part from L.partStart.)
+        const found = await L.stream.finish(L.partStart + p.pcm.length / 44100 + 0.5, () => inkSoFar(L));
         // The whole sketch is inked now; the line keeps showing it until it turns into a finished line.
         L.notes = found.map((n) => [n.pitch, n.start, Math.max(0.05, n.end - n.start), Math.round(n.velocity)]);
         L.covered = Infinity;
         liveChanged(L);
-        mono44 = to44(p.pcm, p.rate);
+        notes = asNotes(found, L.partStart);
+        // A switch too close to the end to be cut while playing (within ~20 s of it): judged now
+        // that every note is in.
+        await L.judging;
+        const cut = L.seg && (await L.seg.cutAt(notes, mono44.length / 44100));
+        if (cut) ({ notes, pcm: mono44 } = await splitOff(e, cut, notes, mono44));
       } else {
         status.step = `transcribing ${(mono44.length / 44100).toFixed(0)}s`;
-        found = await tk.transcribe([mono44, mono44], (done, total) => (status.step = `transcribing ${done}/${total}`));
+        notes = asNotes(await tk.transcribe([mono44, mono44], (done, total) => (status.step = `transcribing ${done}/${total}`)));
       }
-      const notes = found.map((n) => [n.pitch, +n.start.toFixed(3), +(n.end - n.start).toFixed(3), Math.round(n.velocity)]);
-      pnote(p?.live ? "finished live sketch" : "transcribed", { id, seconds: +(mono44.length / 44100).toFixed(1), notes: notes.length,
+      pnote(p?.notes ? "part at a switch" : p?.live ? "finished live sketch" : "transcribed", { id, seconds: +(mono44.length / 44100).toFixed(1), notes: notes.length,
                              waitedForModels: +((tModels - t0) / 1000).toFixed(1), took: +((performance.now() - tModels) / 1000).toFixed(1) });
       if (notes.length < 3) {
         Object.assign(e, { status: "discarded" });
@@ -331,7 +341,12 @@
   // decoded as soon as it's complete (about 8s behind, ~4.5s of work on a GPU), so its notes can
   // be drawn as a live piano roll and, when it closes, only the last window or two remain.
 
-  const live = new Map(); // live id -> { liveId, entryId, rate, stream, waiting, notes, covered, pumping, finishing }
+  //
+  // Playing without a 12 s pause is one stretch (one Transkun stream), but not necessarily one
+  // sketch: where one idea gives way to another (segment.js) the part before becomes a sketch of its
+  // own, and the live line moves on to the next part. Stream times run from the start of the stretch;
+  // the part being played starts at L.partStart.
+  const live = new Map(); // live id -> L (see Capture.on("open"))
   const liveChanged = (L) => window.dispatchEvent(new CustomEvent("reverie:live", { detail: { id: L.entryId } }));
 
   // Linear resampling for browsers that won't run the microphone at 44.1kHz.
@@ -345,15 +360,30 @@
     return out;
   };
 
-  // Audio heard so far is kept in L.waiting until both the sketch and the transcriber have it.
+  // Audio heard so far: the part being played keeps its own (it becomes that sketch's recording),
+  // and L.waiting holds it until both the pencil sketch and the transcriber have it.
+  const haveSketch = (L) => L.sketch || L.noSketch;
   function feed(L, x) {
     L.stream?.push(x);
     L.sketch?.push(x);
-    if (!L.stream || !L.sketch) L.waiting.push(x);
+    if (!L.stream || !haveSketch(L)) L.waiting.push(x);
+    L.chunks.push(x);
+    L.total += x.length;
   }
   function caughtUp(L, consumer) {
-    for (const x of L.waiting) consumer.push(x);
-    if (L.stream && L.sketch) L.waiting = [];
+    for (const x of L.waiting) consumer?.push(x);
+    if (L.stream && haveSketch(L)) L.waiting = [];
+  }
+  // Samples [from, to) of the stretch (44.1kHz, counted from its start), from the part kept.
+  function partAudio(L, from, to) {
+    const out = new Float32Array(Math.max(0, to - from));
+    let pos = L.chunkStart;
+    for (const c of L.chunks) {
+      const a = Math.max(from, pos), b = Math.min(to, pos + c.length);
+      if (b > a) out.set(c.subarray(a - pos, b - pos), a - from);
+      pos += c.length;
+    }
+    return out;
   }
 
   function ensureSketch(L) {
@@ -365,7 +395,10 @@
           caughtUp(L, L.sketch);
           pump(L);
         },
-        () => {},
+        () => {
+          L.noSketch = true;
+          caughtUp(L, null);
+        },
       );
     }
     return L.sketchReady;
@@ -373,8 +406,11 @@
 
   function ensureStream(L) {
     if (!L.ready) {
-      L.ready = loadModels().then(({ tk }) => {
+      L.ready = loadModels().then(({ tk, student }) => {
         L.stream = tk.stream();
+        // Fingerprints for finding switches share the GPU/WASM queue with the transcriber.
+        L.newSegmenter = () => Segment.create((notes) => tk.lock(() => student.embed(notes)));
+        L.seg = L.newSegmenter();
         caughtUp(L, L.stream);
         liveChanged(L);
         pump(L);
@@ -384,12 +420,13 @@
   }
 
   // The sketch: Basic Pitch, a second or two behind; only ahead of where Transkun has settled.
+  // (Its times run from L.sketchBase: it starts afresh with each part.)
   function sketchPump(L) {
     if (!L.sketch) return;
     L.sketching = (L.sketching || Promise.resolve())
       .then(() => L.sketch.pump())
       .then(() => {
-        L.sketchNotes = L.sketch.notes(Math.min(L.covered || 0, L.sketch.seconds));
+        L.sketchNotes = L.sketch.notes(Math.min(Math.max(0, (L.covered || 0) - L.sketchBase), L.sketch.seconds));
         liveChanged(L);
       })
       .catch((err) => console.warn("sketch", err));
@@ -403,6 +440,57 @@
     L.covered = L.stream.covered;
     liveChanged(L); // (LocalLive hides pencil notes behind the ink at once)
     sketchPump(L);
+    findSwitch(L);
+  }
+
+  // Has the playing moved on to another idea? Judged on settled notes as each window lands.
+  function findSwitch(L) {
+    if (!L.seg || L.closed || L.finishing) return;
+    L.judging = (L.judging || Promise.resolve())
+      .then(async () => {
+        if (L.closed || L.finishing) return;
+        const p0 = L.partStart;
+        const notes = L.notes.filter((n) => n[1] >= p0).map((n) => [n[0], n[1] - p0, n[2], n[3]]);
+        const cut = await L.seg.cutAt(notes, L.covered - p0);
+        if (cut && !L.closed && !L.finishing) await cutPart(L, cut);
+      })
+      .catch((err) => console.warn("segment", err));
+  }
+
+  // The part up to the switch becomes a sketch (its notes are settled, so it's finished at once);
+  // the live line moves on to a new sketch starting at the switch.
+  async function cutPart(L, cut) {
+    const p0 = L.partStart, at = p0 + cut.at - 0.05; // just before the next part's first note
+    const found = L.stream.notes().filter((n) => n.start >= p0 && n.start < at);
+    const notes = found.map((n) => [n.pitch, +(n.start - p0).toFixed(3), +(n.end - n.start).toFixed(3), Math.round(n.velocity)]);
+    // Its recording ends a moment after its last sound (as when the playing stops), not at the switch.
+    const soundEnd = Math.max(p0, ...found.map((n) => n.end));
+    const from = Math.round(p0 * 44100), to = Math.round(at * 44100);
+    const pcm = partAudio(L, from, Math.min(to, Math.round((soundEnd + 1.5) * 44100)));
+    const done = state.entries.get(L.entryId);
+    const next = { id: uid("sketch"), created_at: new Date(L.at.getTime() + at * 1000).toISOString(), status: "processing",
+                   live: true, run: L.runId, part: L.part + 1 };
+    // Move the live line on (all at once, before anything awaits).
+    Object.assign(L, { entryId: next.id, partStart: to / 44100, part: L.part + 1, seg: L.newSegmenter() });
+    while (L.chunks.length && L.chunkStart + L.chunks[0].length <= to) L.chunkStart += L.chunks.shift().length;
+    if (L.sketch) {
+      L.sketch = Sketch.stream();
+      L.sketch.push(partAudio(L, to, L.total));
+      L.sketchBase = to / 44100;
+      L.sketchNotes = [];
+      sketchPump(L);
+    }
+    state.entries.set(next.id, next);
+    pnote("switch", { at: +at.toFixed(1), gap: +cut.gap.toFixed(2), change: cut.change && +cut.change.toFixed(3), why: cut.why });
+    if (!done) return; // (the first part's entry was never written: nothing to finish)
+    // Kept on the sketch that ends here, so the rule can be tuned against the user's corrections.
+    done.ended = { why: cut.why, gap: +cut.gap.toFixed(2), change: cut.change && +cut.change.toFixed(3) };
+    pending.set(done.id, { pcm, rate: 44100, notes });
+    changed();
+    await put("entries", next);
+    await put("audio", wav(await resample(pcm, 44100, 22050), 22050), done.id);
+    await put("entries", done);
+    queue(done.id);
   }
 
   function pump(L) {
@@ -421,12 +509,14 @@
   }
 
   Capture.on("open", async ({ id, at, pcm, rate }) => {
-    const L = { liveId: id, entryId: uid("sketch"), rate, stream: null, waiting: [to44(pcm, rate)], notes: [] };
+    const first = to44(pcm, rate);
+    const L = { liveId: id, entryId: uid("sketch"), runId: uid("run"), at, part: 0, partStart: 0, rate, stream: null,
+                waiting: [first], chunks: [first], chunkStart: 0, total: first.length, sketchBase: 0, notes: [] };
     live.set(id, L);
     ensureSketch(L);
     ensureStream(L);
     await state.ready;
-    const e = { id: L.entryId, created_at: at.toISOString(), status: "processing", live: true };
+    const e = { id: L.entryId, created_at: at.toISOString(), status: "processing", live: true, run: L.runId, part: 0 };
     state.entries.set(e.id, e);
     await put("entries", e);
     changed();
@@ -439,7 +529,7 @@
     pump(L);
   });
 
-  Capture.on("burst", async ({ id, pcm, rate, at }) => {
+  Capture.on("burst", async ({ id, pcm, rate, at, samples }) => {
     await state.ready;
     const L = id && live.get(id);
     if (L) {
@@ -452,14 +542,40 @@
       e = { id: uid("sketch"), created_at: at.toISOString(), status: "processing" };
       state.entries.set(e.id, e);
     }
-    pending.set(e.id, L ? { pcm, rate, live: L } : { pcm, rate });
+    // Live: the part still being played when the sound stopped, up to a moment after its last sound
+    // (the listener went on sending audio through the quiet that closed it).
+    const end = L && Math.min(L.total, Math.round((samples * 44100) / rate));
+    const rec = L ? { pcm: partAudio(L, Math.round(L.partStart * 44100), end), rate: 44100, live: L } : { pcm, rate };
+    pending.set(e.id, rec);
     // Keep the recording, for playback and so a reload mid-processing can recover it.
-    const half = await resample(pcm, rate, 22050);
+    const half = await resample(rec.pcm, rec.rate, 22050);
     await put("audio", wav(half, 22050), e.id);
     await put("entries", e);
     changed();
     queue(e.id);
   });
+
+  // The same, for a finished part: what follows the switch becomes a sketch of its own (queued);
+  // returns what's left for this one.
+  async function splitOff(e, cut, notes, pcm) {
+    const at = cut.at - 0.05;
+    const before = notes.filter((n) => n[1] < at);
+    const after = notes.filter((n) => n[1] >= at).map((n) => [n[0], +(n[1] - at).toFixed(3), n[2], n[3]]);
+    const soundEnd = Math.max(0, ...before.map((n) => n[1] + n[2]));
+    const keep = pcm.subarray(0, Math.round(Math.min(at, soundEnd + 1.5) * 44100));
+    const rest = pcm.slice(Math.round(at * 44100));
+    const next = { id: uid("sketch"), created_at: new Date(Date.parse(e.created_at) + at * 1000).toISOString(),
+                   status: "processing", run: e.run, part: (e.part || 0) + 1 };
+    e.ended = { why: cut.why, gap: +cut.gap.toFixed(2), change: cut.change && +cut.change.toFixed(3) };
+    state.entries.set(next.id, next);
+    pending.set(next.id, { pcm: rest, rate: 44100, notes: after });
+    pnote("switch (at the end)", { at: +cut.at.toFixed(1), gap: e.ended.gap, change: e.ended.change, why: cut.why });
+    await put("audio", wav(await resample(keep, 44100, 22050), 22050), e.id);
+    await put("audio", wav(await resample(rest, 44100, 22050), 22050), next.id);
+    await put("entries", next);
+    queue(next.id);
+    return { notes: before, pcm: keep };
+  }
 
   // Notes found so far for a sketch still being played (for the live piano roll), and where it's at.
   // { ink: Transkun's settled notes, sketch: Basic Pitch's notes beyond them, covered: seconds settled,
@@ -468,11 +584,14 @@
   window.LocalLive = (entryId) => {
     for (const L of live.values()) {
       if (L.entryId !== entryId) continue;
-      const covered = L.covered || 0;
-      const seconds = L.stream ? L.stream.seconds : L.waiting.reduce((a, x) => a + x.length, 0) / 44100;
+      // All in this part's own time.
+      const p0 = L.partStart, covered = Math.max(0, (L.covered || 0) - p0);
+      const seconds = L.total / 44100 - p0;
       const closed = L.closed || L.finishing;
       const phase = L.covered === Infinity ? "inked" : closed && !L.stream ? "waiting" : L.finishing ? "finishing" : closed ? "queued" : "live";
-      return { ink: L.notes || [], sketch: (L.sketchNotes || []).filter((n) => n[1] >= covered), covered, seconds, phase };
+      const ink = (L.notes || []).filter((n) => n[1] >= p0).map((n) => [n[0], n[1] - p0, n[2], n[3]]);
+      const sketch = (L.sketchNotes || []).map((n) => [n[0], n[1] + L.sketchBase - p0, n[2], n[3]]).filter((n) => n[1] >= covered);
+      return { ink, sketch, covered, seconds, phase };
     }
     return null;
   };

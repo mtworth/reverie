@@ -6,7 +6,8 @@
 //   Capture.on("state", (state) => …)              // off | starting | listening | hearing | paused | blocked | elsewhere | needs-gesture
 //   Capture.on("open",  ({ id, at, pcm, rate }) …)  // a sketch began; pcm = its first audio (incl. a second before)
 //   Capture.on("frames", ({ id, pcm }) …)           // more audio for the open sketch
-//   Capture.on("burst", ({ id, pcm, rate, at }) …)  // the sketch closed; pcm = all of it (id: null when injected)
+//   Capture.on("burst", ({ id, pcm, rate, at, samples }) …)  // it closed; pcm = all of it, or null when longer
+//                                                   // than the ring (the live pipeline keeps its own copy)
 //   Capture.ignorePlayback(audioLike); Capture.start(); Capture.pause();
 
 window.Capture = (() => {
@@ -15,7 +16,9 @@ window.Capture = (() => {
   const PREROLL_S = 1;
   const TAIL_S = 1.5;
   const MIN_ACTIVE_MS = 600; // less sound than this is a cough, not a sketch
-  const MAX_SKETCH_S = 60; // continuous playing is cut into one-minute sketches
+  // Continuous playing is no longer cut by the clock: the pipeline ends a sketch where one idea gives
+  // way to another (segment.js). This is only a backstop for sound that never pauses.
+  const MAX_SKETCH_S = 600;
   const RING_S = 90;
   const THRESHOLD_ABOVE_FLOOR_DB = 12;
   const KEEP_GOING_DB = 6;
@@ -164,7 +167,7 @@ window.Capture = (() => {
         b.sent = cap.written;
       }
       if (t - b.lastActiveMs > SILENCE_MS) closeBurst(false, "quiet");
-      else if (cap.written - b.startSample > MAX_SKETCH_S * rate) closeBurst(true, "one-minute cut");
+      else if (cap.written - b.startSample > MAX_SKETCH_S * rate) closeBurst(true, "ten-minute cut");
     }
     setState(b && b.activeMs >= MIN_ACTIVE_MS && t - b.lastActiveMs < 1500 ? "hearing" : "listening");
   }
@@ -178,11 +181,12 @@ window.Capture = (() => {
     const rate = cap.ctx.sampleRate;
     const end = forced ? cap.written : Math.min(cap.written, b.lastActiveSample + Math.round(TAIL_S * rate));
     if (end > b.sent) emit("frames", { id: b.id, pcm: take(b.sent, end) });
-    const pcm = take(b.startSample, end);
-    note(`sketch closed (${why})`, { seconds: +(pcm.length / rate).toFixed(1) });
-    emit("burst", { id: b.id, pcm, rate, at: b.at });
+    const samples = end - b.startSample;
+    const pcm = samples <= cap.ring.length - rate ? take(b.startSample, end) : null;
+    note(`sketch closed (${why})`, { seconds: +(samples / rate).toFixed(1) });
+    emit("burst", { id: b.id, pcm, rate, at: b.at, samples });
     // Continuous playing: the next sketch starts at once, where this one was cut.
-    if (forced && why === "one-minute cut") {
+    if (forced && why === "ten-minute cut") {
       cap.burst = { id: null, startSample: end, sent: 0, lastActiveMs: b.lastActiveMs, lastActiveSample: b.lastActiveSample,
                     activeMs: 0, at: new Date() };
     }
@@ -208,7 +212,7 @@ window.Capture = (() => {
                                                quietMs: now() - cap.burst.lastActiveMs },
                          rate: cap.ctx?.sampleRate, ctx: cap.ctx?.state });
   // For testing without a microphone: hand the pipeline a recording as if it had just been heard.
-  const inject = (pcm, rate) => emit("burst", { id: null, pcm, rate, at: new Date() });
+  const inject = (pcm, rate) => emit("burst", { id: null, pcm, rate, at: new Date(), samples: pcm.length });
   // For testing the live path without a microphone: play a recording in as if it were arriving.
   // `soundS`: where the sound ends (the closed sketch is trimmed there, as the listener does).
   async function injectLive(pcm, rate, chunkS = 1, speed = 1, soundS = null) {
@@ -218,7 +222,8 @@ window.Capture = (() => {
       await new Promise((r) => setTimeout(r, (chunkS * 1000) / speed));
       emit("frames", { id, pcm: pcm.slice(i, i + step) });
     }
-    emit("burst", { id, pcm: soundS ? pcm.slice(0, Math.round((soundS + 1.5) * rate)) : pcm, rate, at });
+    const kept = soundS ? pcm.slice(0, Math.round((soundS + 1.5) * rate)) : pcm;
+    emit("burst", { id, pcm: kept, rate, at, samples: kept.length });
   }
   return { start, pause, ignorePlayback, debug, inject, injectLive, log,
            on: (type, fn) => handlers[type].push(fn), get state() { return cap.on ? "listening" : cap.state; } };

@@ -200,11 +200,13 @@
       const st = newState();
       // next: the window to start; done: where the windows already decoded end (covered follows done,
       // so the live display never hides its sketch of a stretch before the notes for it exist).
-      let buf = new Float32Array(FS * 30), len = 0, next = 0, done = 0, pumping = null;
+      // buf holds samples [base, len): what's no longer needed is dropped, so playing for minutes
+      // without a pause doesn't keep it all in memory.
+      let buf = new Float32Array(FS * 30), base = 0, len = 0, next = 0, done = 0, pumping = null;
       const audio = (_c, from, to) => {
         const out = new Float32Array(to - from);
-        const a = Math.max(0, from), b = Math.min(len, to);
-        if (b > a) out.set(buf.subarray(a, b), a - from);
+        const a = Math.max(base, from), b = Math.min(len, to);
+        if (b > a) out.set(buf.subarray(a - base, b - base), a - from);
         return out;
       };
       // onWindow: called as each window's notes land (so a backlog inks in a window at a time).
@@ -219,12 +221,18 @@
       }
       return {
         push(x) {
-          if (len + x.length > buf.length) {
-            const bigger = new Float32Array(Math.max(buf.length * 2, len + x.length));
-            bigger.set(buf.subarray(0, len));
+          // The window being decoded (or next) starts at `done`; nothing before its padding is read again.
+          const needFrom = Math.max(0, done - padSamples);
+          if (needFrom - base > FS * 20) {
+            buf.copyWithin(0, needFrom - base, len - base);
+            base = needFrom;
+          }
+          if (len - base + x.length > buf.length) {
+            const bigger = new Float32Array(Math.max(buf.length * 2, len - base + x.length));
+            bigger.set(buf.subarray(0, len - base));
             buf = bigger;
           }
-          buf.set(x, len);
+          buf.set(x, len - base);
           len += x.length;
         },
         pump(onWindow) {
@@ -255,7 +263,6 @@
         // Seconds of audio whose notes are settled: up to a second short of the end of the last window
         // that has finished decoding (not merely started).
         get covered() { return done === 0 ? 0 : Math.max(0, (done - step + seg - padSamples) / FS - 1); },
-        get audio() { return buf.subarray(0, len); },
       };
     }
 
